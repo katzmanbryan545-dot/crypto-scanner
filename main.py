@@ -338,6 +338,51 @@ async def check_volatility_alerts():
 
         await asyncio.sleep(1)
 
+# Функция быстрого просмотра портфеля (без анализа новостей)
+async def send_portfolio_view():
+    """Быстрый просмотр портфеля: только цены и изменения, без новостей"""
+    loop = asyncio.get_event_loop()
+    projects_data = await loop.run_in_executor(None, get_projects_from_sheet)
+
+    if not projects_data:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Не удалось загрузить данные из Google Таблицы.")
+        return
+
+    portfolio_text = "💼 <b>ВАШ ПОРТФЕЛЬ И АКТИВНОСТИ:</b>\n\n"
+
+    for p in projects_data:
+        name = p["name"]
+        buy_price = p["buy_price"]
+
+        # Получаем текущую цену
+        curr_price, change24h = await loop.run_in_executor(None, get_current_crypto_price, name)
+
+        if curr_price and change24h is not None:
+            change_str = f"+{change24h:.1f}%" if change24h >= 0 else f"{change24h:.1f}%"
+            portfolio_text += f"• <b>{name.upper()}</b>: ${curr_price} ({change_str})"
+
+            # Добавляем статус на основе данных
+            if buy_price:
+                roi = ((curr_price - buy_price) / buy_price) * 100
+                if roi >= 0:
+                    portfolio_text += f" | Статус: Профит +{roi:.1f}%"
+                else:
+                    portfolio_text += f" | Статус: Лосс {roi:.1f}%"
+            else:
+                portfolio_text += " | Статус: Холд"
+
+            portfolio_text += "\n"
+        else:
+            portfolio_text += f"• <b>{name.upper()}</b>: Данные недоступны\n"
+
+        await asyncio.sleep(0.5)
+
+    try:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=portfolio_text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Ошибка отправки портфеля с HTML: {e}")
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=portfolio_text)
+
 # Главная функция утреннего дайджеста
 async def send_daily_digest():
     try:
@@ -431,6 +476,52 @@ async def send_daily_digest():
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text)
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Ошибка HTML разметки в новостях: {str(e)}")
 
+# Функция дайджеста новостей (без цен, только новости и дедлайны)
+async def send_news_digest():
+    """Анализ новостей и поиск критических триггеров без вывода цен"""
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text="📰 Начинаю поиск важных новостей и дедлайнов по вашим проектам..."
+    )
+
+    loop = asyncio.get_event_loop()
+    projects_data = await loop.run_in_executor(None, get_projects_from_sheet)
+
+    if not projects_data:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Не удалось загрузить данные из Google Таблицы.")
+        return
+
+    important_updates = []
+    silent_projects_count = 0
+
+    for p in projects_data:
+        name = p["name"]
+
+        # Ищем важные новости через ИИ
+        report = await loop.run_in_executor(None, analyze_project_news, name)
+        if report.lower() == "тишина":
+            silent_projects_count += 1
+        else:
+            important_updates.append(f"🔥 <b>{name}</b>:\n{report}")
+
+        await asyncio.sleep(2)
+
+    # Отправляем блок новостей
+    if important_updates:
+        result_text = "🔔 <b>Важные обновления по твоим активностям:</b>\n\n" + "\n\n".join(important_updates)
+        if silent_projects_count > 0:
+            result_text += f"\n\n🤫 По остальным проектам ({silent_projects_count} шт.) - важных новостей не обнаружено."
+    else:
+        result_text = f"👌 По всем проектам из таблицы в плане новостей сейчас полное затишье. Критических дедлайнов нет."
+
+    try:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Ошибка отправки дайджеста с HTML: {e}")
+        # Отправляем без HTML разметки как фоллбэк
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text)
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Ошибка HTML разметки: {str(e)}")
+
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -447,11 +538,25 @@ async def start_cmd(message: Message):
     await message.answer(
         f"Привет! Твой крипто-терминал обновлен.\n\n"
         f"Доступные команды:\n"
-        f"/check - запустить аудит цен и новостей\n"
+        f"/portfolio - быстрый просмотр портфеля\n"
+        f"/digest - дайджест новостей и дедлайнов\n"
+        f"/check - полный аудит (цены + новости)\n"
         f"/pulse - проверить рыночный пульс\n\n"
         f"Или используй кнопки ниже:",
         reply_markup=keyboard
     )
+
+@dp.message(Command("portfolio"))
+async def portfolio_cmd(message: Message):
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await send_portfolio_view()
+
+@dp.message(Command("digest"))
+async def digest_cmd(message: Message):
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await send_news_digest()
 
 @dp.message(Command("check"))
 async def manual_check(message: Message):
@@ -489,15 +594,15 @@ async def handle_volatility_research(callback: CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "portfolio")
 async def handle_portfolio_button(callback: CallbackQuery):
-    """Обработчик кнопки 'Портфель'"""
+    """Обработчик кнопки 'Портфель' - только цены, без новостей"""
     await callback.answer()
-    await send_daily_digest()
+    await send_portfolio_view()
 
 @dp.callback_query(lambda c: c.data == "digest")
 async def handle_digest_button(callback: CallbackQuery):
-    """Обработчик кнопки 'Дайджест дедлайнов'"""
+    """Обработчик кнопки 'Дайджест дедлайнов' - только новости"""
     await callback.answer()
-    await send_daily_digest()
+    await send_news_digest()
 
 @dp.callback_query(lambda c: c.data == "pulse")
 async def handle_pulse_button(callback: CallbackQuery):

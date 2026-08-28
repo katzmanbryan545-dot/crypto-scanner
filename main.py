@@ -504,7 +504,7 @@ async def send_portfolio_view():
         # Делаем пакетный запрос цен
         prices_data = await loop.run_in_executor(None, get_batch_crypto_prices, coin_ids)
 
-        spot_text = "💼 <b>СПОТ-ПОРТФЕЛЬ:</b>\n\n"
+        spot_text = "💼 <b>СПОТ-ПОРТФЕЛЬ & ЦЕЛЕВЫЕ ЦЕНЫ:</b>\n\n"
 
         for spot in spot_data:
             ticker = spot["ticker"]
@@ -516,27 +516,46 @@ async def send_portfolio_view():
             if coin_id and coin_id in prices_data:
                 coin_data = prices_data[coin_id]
                 curr_price = coin_data.get("usd")
-                change24h = coin_data.get("usd_24h_change")
 
-                if curr_price:
-                    change_str = f"+{change24h:.1f}%" if change24h and change24h >= 0 else f"{change24h:.1f}%" if change24h else "N/A"
-                    spot_text += f"• <b>{ticker}</b>: ${curr_price:.4f} ({change_str})"
+                if curr_price and curr_price > 0:
+                    # Определяем количество знаков для цены
+                    if curr_price < 0.01:
+                        price_format = f"${curr_price:.6f}"
+                    else:
+                        price_format = f"${curr_price:.4f}"
 
-                    # Расчет PnL
-                    if entry_price:
+                    # Расчет PnL и эмодзи
+                    if entry_price and entry_price > 0:
                         pnl = ((curr_price - entry_price) / entry_price) * 100
-                        pnl_str = f"+{pnl:.1f}%" if pnl >= 0 else f"{pnl:.1f}%"
-                        spot_text += f"\n  Вход: ${entry_price:.4f} | PnL: {pnl_str}"
+                        emoji = "🟢" if pnl >= 0 else "🔴"
+
+                        # Форматирование entry_price
+                        if entry_price < 0.01:
+                            entry_format = f"${entry_price:.6f}"
+                        else:
+                            entry_format = f"${entry_price:.4f}"
+
+                        # Базовая строка с ценой и PnL
+                        spot_text += (
+                            f"{emoji} <b>{ticker}</b>: {price_format} "
+                            f"(Вход: {entry_format}"
+                        )
+
+                        # Добавляем тейк-профит если есть
+                        if take_profit and take_profit > 0:
+                            spot_text += f" | Тейк: ${take_profit:.2f}"
+
+                        spot_text += f" | PnL: {pnl:+.1f}%)\n"
 
                         # Расстояние до тейк-профита
-                        if take_profit:
-                            distance_to_tp = ((take_profit - curr_price) / curr_price) * 100
-                            if distance_to_tp > 0:
-                                spot_text += f" | До TP: +{distance_to_tp:.1f}%"
-                            else:
-                                spot_text += f" | TP достигнут ({abs(distance_to_tp):.1f}% выше)"
-
-                    spot_text += "\n"
+                        if take_profit and take_profit > 0:
+                            tp_gain = ((take_profit - curr_price) / curr_price) * 100
+                            spot_text += f"   🎯 До тейка: {tp_gain:+.1f}%\n"
+                        else:
+                            spot_text += f"   🎯 До тейка: N/A\n"
+                    else:
+                        # Нет цены входа
+                        spot_text += f"• <b>{ticker}</b>: {price_format} (Без точки входа)\n"
             else:
                 spot_text += f"• <b>{ticker}</b>: Цена недоступна\n"
 
@@ -546,9 +565,9 @@ async def send_portfolio_view():
             print(f"Ошибка отправки спот-портфеля: {e}")
             await bot.send_message(chat_id=ADMIN_CHAT_ID, text=spot_text)
 
-    # --- СЕКЦИЯ 2: АКТИВНОСТИ И СТЕЙКИНГ ---
+    # --- СЕКЦИЯ 2: РАДАР АКТИВНОСТЕЙ & СТЕЙКИНГА ---
     if airdrops_data:
-        activities_text = "🪂 <b>АКТИВНОСТИ И СТЕЙКИНГ:</b>\n\n"
+        activities_text = "⏳ <b>РАДАР АКТИВНОСТЕЙ:</b>\n\n"
 
         for activity in airdrops_data:
             project = activity["project"]
@@ -556,11 +575,15 @@ async def send_portfolio_view():
             deadline = activity["deadline"]
             status = activity["status"]
 
-            activities_text += f"• <b>{project}</b>\n"
-            activities_text += f"  Тип: {activity_type}"
+            activities_text += f"• <b>{project}</b> [Тип: {activity_type}]"
+
+            if status:
+                activities_text += f" — Статус: {status}"
+
             if deadline:
-                activities_text += f" | Дедлайн: {deadline}"
-            activities_text += f"\n  Статус: {status}\n"
+                activities_text += f" (Дедлайн: {deadline})"
+
+            activities_text += "\n"
 
         try:
             await bot.send_message(chat_id=ADMIN_CHAT_ID, text=activities_text, parse_mode="HTML")

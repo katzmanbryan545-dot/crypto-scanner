@@ -39,6 +39,32 @@ openai_client = OpenAI(
 # Кэш алертов волатильности: {coin_name: last_alert_timestamp}
 volatility_alerts_cache = {}
 
+# Маппинг популярных тикеров в CoinGecko coin_id
+COIN_MAP = {
+    "ARB": "arbitrum", "ARBITRUM": "arbitrum",
+    "OP": "optimism", "OPTIMISM": "optimism",
+    "ATOM": "cosmos", "COSMOS": "cosmos",
+    "TIA": "celestia", "CELESTIA": "celestia",
+    "DYM": "dymension", "DYMENSION": "dymension",
+    "APT": "aptos", "APTOS": "aptos",
+    "BONK": "bonk",
+    "APEX": "apex-token",
+    "BTC": "bitcoin", "BITCOIN": "bitcoin",
+    "ETH": "ethereum", "ETHEREUM": "ethereum",
+    "SOL": "solana", "SOLANA": "solana",
+    "AVAX": "avalanche-2", "AVALANCHE": "avalanche-2",
+    "MATIC": "matic-network", "POLYGON": "matic-network",
+    "DOT": "polkadot", "POLKADOT": "polkadot",
+    "LINK": "chainlink", "CHAINLINK": "chainlink",
+    "UNI": "uniswap", "UNISWAP": "uniswap",
+    "AAVE": "aave",
+    "STRK": "starknet", "STARKNET": "starknet",
+    "ZK": "zksync", "ZKSYNC": "zksync",
+    "SUI": "sui",
+    "SEI": "sei-network",
+    "INJ": "injective-protocol", "INJECTIVE": "injective-protocol"
+}
+
 # Функция чтения проектов и цен покупки из Google Таблицы
 def get_projects_from_sheet():
     try:
@@ -62,6 +88,27 @@ def get_projects_from_sheet():
     except Exception as e:
         print(f"Ошибка чтения таблицы: {e}")
         return []
+
+# Функция пакетного получения цен с CoinGecko API
+def get_batch_crypto_prices(coin_ids):
+    """Получает цены для нескольких монет одним запросом"""
+    try:
+        if not coin_ids:
+            return {}
+
+        # Формируем список coin_id через запятую
+        ids_string = ",".join(coin_ids)
+        url = f"https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": ids_string,
+            "vs_currencies": "usd",
+            "include_24hr_change": "true"
+        }
+        response = requests.get(url, params=params, timeout=10).json()
+        return response
+    except Exception as e:
+        print(f"Ошибка пакетного запроса цен: {e}")
+        return {}
 
 # Функция получения текущей цены с CoinGecko API
 def get_current_crypto_price(project_name):
@@ -348,34 +395,52 @@ async def send_portfolio_view():
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Не удалось загрузить данные из Google Таблицы.")
         return
 
+    # Собираем coin_id для пакетного запроса
+    coin_ids = []
+    name_to_id = {}
+
+    for p in projects_data:
+        name = p["name"].strip().upper()
+        # Пытаемся найти в маппинге
+        coin_id = COIN_MAP.get(name, p["name"].lower())
+        coin_ids.append(coin_id)
+        name_to_id[name] = coin_id
+
+    # Делаем пакетный запрос цен
+    prices_data = await loop.run_in_executor(None, get_batch_crypto_prices, coin_ids)
+
     portfolio_text = "💼 <b>ВАШ ПОРТФЕЛЬ И АКТИВНОСТИ:</b>\n\n"
 
     for p in projects_data:
-        name = p["name"]
+        name = p["name"].strip().upper()
         buy_price = p["buy_price"]
+        coin_id = name_to_id.get(name)
 
-        # Получаем текущую цену
-        curr_price, change24h = await loop.run_in_executor(None, get_current_crypto_price, name)
+        # Проверяем, есть ли данные по этой монете
+        if coin_id and coin_id in prices_data:
+            coin_data = prices_data[coin_id]
+            curr_price = coin_data.get("usd")
+            change24h = coin_data.get("usd_24h_change")
 
-        if curr_price and change24h is not None:
-            change_str = f"+{change24h:.1f}%" if change24h >= 0 else f"{change24h:.1f}%"
-            portfolio_text += f"• <b>{name.upper()}</b>: ${curr_price} ({change_str})"
+            if curr_price and change24h is not None:
+                change_str = f"+{change24h:.1f}%" if change24h >= 0 else f"{change24h:.1f}%"
+                portfolio_text += f"• <b>{name}</b>: ${curr_price:.4f} ({change_str})"
 
-            # Добавляем статус на основе данных
-            if buy_price:
-                roi = ((curr_price - buy_price) / buy_price) * 100
-                if roi >= 0:
-                    portfolio_text += f" | Статус: Профит +{roi:.1f}%"
+                # Добавляем статус на основе данных
+                if buy_price:
+                    roi = ((curr_price - buy_price) / buy_price) * 100
+                    if roi >= 0:
+                        portfolio_text += f" | Статус: Профит +{roi:.1f}%"
+                    else:
+                        portfolio_text += f" | Статус: Лосс {roi:.1f}%"
                 else:
-                    portfolio_text += f" | Статус: Лосс {roi:.1f}%"
-            else:
-                portfolio_text += " | Статус: Холд"
+                    portfolio_text += " | Статус: Холд"
 
-            portfolio_text += "\n"
+                portfolio_text += "\n"
         else:
-            portfolio_text += f"• <b>{name.upper()}</b>: Данные недоступны\n"
-
-        await asyncio.sleep(0.5)
+            # Монета не торгуется / тестнет / сервис без токена
+            # Читаем статус из таблицы (можно добавить колонку "Статус" в будущем)
+            portfolio_text += f"• <b>{name}</b>: ⏳ Активность (без токена) | Статус: Отслеживание\n"
 
     try:
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text=portfolio_text, parse_mode="HTML")

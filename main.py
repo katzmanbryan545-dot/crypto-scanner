@@ -111,8 +111,8 @@ def analyze_with_openai(project_name, search_result):
         ВАЖНО HTML-РАЗМЕТКА:
         - Используй ТОЛЬКО теги: <b>, </b>, <i>, </i>, <a href="URL">, </a>
         - НИКОГДА не используй символы < и > в обычном тексте
-        - НЕ используй неразрешенные теги (например <code>, <pre>, <u>)
-        - Если находишь важные новости, включи кликабельные ссылки: <a href="URL">текст</a>
+        - НЕ используй теги: <br>, </br>, <p>, </p>, <code>, <pre>, <u>
+        - Для переноса строки используй обычный Enter (перенос строки), НЕ используй <br>
 
         Пиши строго без воды. Используй только обычные дефисы вместо длинных тире.
 
@@ -125,7 +125,11 @@ def analyze_with_openai(project_name, search_result):
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1
         )
-        return response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
+        # Очистка от запрещенных HTML тегов
+        result = result.replace("<br>", "\n").replace("</br>", "").replace("<br/>", "\n")
+        result = result.replace("<p>", "").replace("</p>", "\n")
+        return result
     except Exception as e:
         error_msg = f"Ошибка OpenRouter (анализ {project_name}): {str(e)}"
         print(error_msg)
@@ -249,6 +253,8 @@ def search_volatility_reason(project_name):
         ВАЖНО HTML-РАЗМЕТКА:
         - Используй ТОЛЬКО теги: <b>, </b>, <i>, </i>, <a href="URL">, </a>
         - НИКОГДА не используй символы < и > в обычном тексте
+        - НЕ используй теги: <br>, </br>, <p>, </p>, <code>, <pre>, <u>
+        - Для переноса строки используй обычный Enter (перенос строки), НЕ используй <br>
         - Включай ссылки на источники: <a href="URL">текст</a>
 
         Данные:
@@ -261,7 +267,11 @@ def search_volatility_reason(project_name):
             temperature=0.2
         )
 
-        return response.choices[0].message.content.strip()
+        result = response.choices[0].message.content.strip()
+        # Очистка от запрещенных HTML тегов
+        result = result.replace("<br>", "\n").replace("</br>", "").replace("<br/>", "\n")
+        result = result.replace("<p>", "").replace("</p>", "\n")
+        return result
 
     except Exception as e:
         error_msg = f"❌ Ошибка поиска причины волатильности: {str(e)}"

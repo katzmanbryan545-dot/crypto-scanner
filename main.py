@@ -41,31 +41,122 @@ volatility_alerts_cache = {}
 
 # Маппинг популярных тикеров в CoinGecko coin_id
 COIN_MAP = {
-    "ARB": "arbitrum", "ARBITRUM": "arbitrum",
-    "OP": "optimism", "OPTIMISM": "optimism",
-    "ATOM": "cosmos", "COSMOS": "cosmos",
-    "TIA": "celestia", "CELESTIA": "celestia",
-    "DYM": "dymension", "DYMENSION": "dymension",
-    "APT": "aptos", "APTOS": "aptos",
+    "ARB": "arbitrum",
+    "OP": "optimism",
+    "ATOM": "cosmos",
+    "TIA": "celestia",
+    "DYM": "dymension",
+    "APT": "aptos",
     "BONK": "bonk",
     "APEX": "apex-token",
-    "BTC": "bitcoin", "BITCOIN": "bitcoin",
-    "ETH": "ethereum", "ETHEREUM": "ethereum",
-    "SOL": "solana", "SOLANA": "solana",
-    "AVAX": "avalanche-2", "AVALANCHE": "avalanche-2",
-    "MATIC": "matic-network", "POLYGON": "matic-network",
-    "DOT": "polkadot", "POLKADOT": "polkadot",
-    "LINK": "chainlink", "CHAINLINK": "chainlink",
-    "UNI": "uniswap", "UNISWAP": "uniswap",
+    "BTC": "bitcoin",
+    "ETH": "ethereum",
+    "SOL": "solana",
+    "AVAX": "avalanche-2",
+    "MATIC": "matic-network",
+    "DOT": "polkadot",
+    "LINK": "chainlink",
+    "UNI": "uniswap",
     "AAVE": "aave",
-    "STRK": "starknet", "STARKNET": "starknet",
-    "ZK": "zksync", "ZKSYNC": "zksync",
+    "STRK": "starknet",
+    "ZK": "zksync",
     "SUI": "sui",
     "SEI": "sei-network",
-    "INJ": "injective-protocol", "INJECTIVE": "injective-protocol"
+    "INJ": "injective-protocol",
+    "OSMO": "osmosis",
+    "KUJI": "kujira",
+    "JUNO": "juno-network",
+    "EVMOS": "evmos",
+    "AXL": "axelar",
+    "CRO": "crypto-com-chain",
+    "FTM": "fantom",
+    "NEAR": "near",
+    "ADA": "cardano",
+    "XRP": "ripple",
+    "BNB": "binancecoin",
+    "DOGE": "dogecoin"
 }
 
-# Функция чтения проектов и цен покупки из Google Таблицы
+# Функция чтения спот-портфеля из Google Таблицы (лист Spot)
+def get_spot_portfolio():
+    """Читает спот-портфель: [Тикер, Количество, Вход, Тейк, Заметка]"""
+    try:
+        # gid=0 обычно первый лист (Spot)
+        url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv&gid=0"
+        df = pd.read_csv(url)
+
+        spot_list = []
+        for _, row in df.iterrows():
+            ticker = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+            if not ticker:
+                continue
+
+            # Колонки: Тикер, Количество, Вход, Тейк, Заметка
+            quantity = float(row.iloc[1]) if len(row) > 1 and pd.notna(row.iloc[1]) else 0
+            entry_price = None
+            take_profit = None
+            note = ""
+
+            if len(row) > 2 and pd.notna(row.iloc[2]):
+                try:
+                    entry_price = float(str(row.iloc[2]).replace("$", "").replace(",", ".").strip())
+                except ValueError:
+                    pass
+
+            if len(row) > 3 and pd.notna(row.iloc[3]):
+                try:
+                    take_profit = float(str(row.iloc[3]).replace("$", "").replace(",", ".").strip())
+                except ValueError:
+                    pass
+
+            if len(row) > 4 and pd.notna(row.iloc[4]):
+                note = str(row.iloc[4]).strip()
+
+            spot_list.append({
+                "ticker": ticker.upper(),
+                "quantity": quantity,
+                "entry_price": entry_price,
+                "take_profit": take_profit,
+                "note": note
+            })
+
+        return spot_list
+    except Exception as e:
+        print(f"Ошибка чтения спот-портфеля: {e}")
+        return []
+
+# Функция чтения аирдропов из Google Таблицы (лист Airdrops)
+def get_airdrops_activities():
+    """Читает активности/аирдропы: [Проект, Тип, Дедлайн, Статус]"""
+    try:
+        # gid=1 обычно второй лист (Airdrops)
+        url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv&gid=1"
+        df = pd.read_csv(url)
+
+        activities_list = []
+        for _, row in df.iterrows():
+            project = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
+            if not project:
+                continue
+
+            # Колонки: Проект, Тип, Дедлайн, Статус
+            activity_type = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else "Аирдроп"
+            deadline = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+            status = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else "Активен"
+
+            activities_list.append({
+                "project": project,
+                "type": activity_type,
+                "deadline": deadline,
+                "status": status
+            })
+
+        return activities_list
+    except Exception as e:
+        print(f"Ошибка чтения аирдропов: {e}")
+        return []
+
+# Функция чтения проектов и цен покупки из Google Таблицы (DEPRECATED - оставлена для совместимости)
 def get_projects_from_sheet():
     try:
         url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv"
@@ -387,66 +478,95 @@ async def check_volatility_alerts():
 
 # Функция быстрого просмотра портфеля (без анализа новостей)
 async def send_portfolio_view():
-    """Быстрый просмотр портфеля: только цены и изменения, без новостей"""
+    """Быстрый просмотр портфеля: спот-позиции и активности"""
     loop = asyncio.get_event_loop()
-    projects_data = await loop.run_in_executor(None, get_projects_from_sheet)
 
-    if not projects_data:
+    # Получаем данные из двух листов
+    spot_data = await loop.run_in_executor(None, get_spot_portfolio)
+    airdrops_data = await loop.run_in_executor(None, get_airdrops_activities)
+
+    if not spot_data and not airdrops_data:
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Не удалось загрузить данные из Google Таблицы.")
         return
 
-    # Собираем coin_id для пакетного запроса
-    coin_ids = []
-    name_to_id = {}
+    # --- СЕКЦИЯ 1: СПОТ-ПОРТФЕЛЬ ---
+    if spot_data:
+        # Собираем coin_id для пакетного запроса
+        coin_ids = []
+        ticker_to_id = {}
 
-    for p in projects_data:
-        name = p["name"].strip().upper()
-        # Пытаемся найти в маппинге
-        coin_id = COIN_MAP.get(name, p["name"].lower())
-        coin_ids.append(coin_id)
-        name_to_id[name] = coin_id
+        for spot in spot_data:
+            ticker = spot["ticker"]
+            coin_id = COIN_MAP.get(ticker, ticker.lower())
+            coin_ids.append(coin_id)
+            ticker_to_id[ticker] = coin_id
 
-    # Делаем пакетный запрос цен
-    prices_data = await loop.run_in_executor(None, get_batch_crypto_prices, coin_ids)
+        # Делаем пакетный запрос цен
+        prices_data = await loop.run_in_executor(None, get_batch_crypto_prices, coin_ids)
 
-    portfolio_text = "💼 <b>ВАШ ПОРТФЕЛЬ И АКТИВНОСТИ:</b>\n\n"
+        spot_text = "💼 <b>СПОТ-ПОРТФЕЛЬ:</b>\n\n"
 
-    for p in projects_data:
-        name = p["name"].strip().upper()
-        buy_price = p["buy_price"]
-        coin_id = name_to_id.get(name)
+        for spot in spot_data:
+            ticker = spot["ticker"]
+            entry_price = spot["entry_price"]
+            take_profit = spot["take_profit"]
+            coin_id = ticker_to_id.get(ticker)
 
-        # Проверяем, есть ли данные по этой монете
-        if coin_id and coin_id in prices_data:
-            coin_data = prices_data[coin_id]
-            curr_price = coin_data.get("usd")
-            change24h = coin_data.get("usd_24h_change")
+            # Проверяем, есть ли данные по этой монете
+            if coin_id and coin_id in prices_data:
+                coin_data = prices_data[coin_id]
+                curr_price = coin_data.get("usd")
+                change24h = coin_data.get("usd_24h_change")
 
-            if curr_price and change24h is not None:
-                change_str = f"+{change24h:.1f}%" if change24h >= 0 else f"{change24h:.1f}%"
-                portfolio_text += f"• <b>{name}</b>: ${curr_price:.4f} ({change_str})"
+                if curr_price:
+                    change_str = f"+{change24h:.1f}%" if change24h and change24h >= 0 else f"{change24h:.1f}%" if change24h else "N/A"
+                    spot_text += f"• <b>{ticker}</b>: ${curr_price:.4f} ({change_str})"
 
-                # Добавляем статус на основе данных
-                if buy_price:
-                    roi = ((curr_price - buy_price) / buy_price) * 100
-                    if roi >= 0:
-                        portfolio_text += f" | Статус: Профит +{roi:.1f}%"
-                    else:
-                        portfolio_text += f" | Статус: Лосс {roi:.1f}%"
-                else:
-                    portfolio_text += " | Статус: Холд"
+                    # Расчет PnL
+                    if entry_price:
+                        pnl = ((curr_price - entry_price) / entry_price) * 100
+                        pnl_str = f"+{pnl:.1f}%" if pnl >= 0 else f"{pnl:.1f}%"
+                        spot_text += f"\n  Вход: ${entry_price:.4f} | PnL: {pnl_str}"
 
-                portfolio_text += "\n"
-        else:
-            # Монета не торгуется / тестнет / сервис без токена
-            # Читаем статус из таблицы (можно добавить колонку "Статус" в будущем)
-            portfolio_text += f"• <b>{name}</b>: ⏳ Активность (без токена) | Статус: Отслеживание\n"
+                        # Расстояние до тейк-профита
+                        if take_profit:
+                            distance_to_tp = ((take_profit - curr_price) / curr_price) * 100
+                            if distance_to_tp > 0:
+                                spot_text += f" | До TP: +{distance_to_tp:.1f}%"
+                            else:
+                                spot_text += f" | TP достигнут ({abs(distance_to_tp):.1f}% выше)"
 
-    try:
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=portfolio_text, parse_mode="HTML")
-    except Exception as e:
-        print(f"Ошибка отправки портфеля с HTML: {e}")
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=portfolio_text)
+                    spot_text += "\n"
+            else:
+                spot_text += f"• <b>{ticker}</b>: Цена недоступна\n"
+
+        try:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=spot_text, parse_mode="HTML")
+        except Exception as e:
+            print(f"Ошибка отправки спот-портфеля: {e}")
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=spot_text)
+
+    # --- СЕКЦИЯ 2: АКТИВНОСТИ И СТЕЙКИНГ ---
+    if airdrops_data:
+        activities_text = "🪂 <b>АКТИВНОСТИ И СТЕЙКИНГ:</b>\n\n"
+
+        for activity in airdrops_data:
+            project = activity["project"]
+            activity_type = activity["type"]
+            deadline = activity["deadline"]
+            status = activity["status"]
+
+            activities_text += f"• <b>{project}</b>\n"
+            activities_text += f"  Тип: {activity_type}"
+            if deadline:
+                activities_text += f" | Дедлайн: {deadline}"
+            activities_text += f"\n  Статус: {status}\n"
+
+        try:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=activities_text, parse_mode="HTML")
+        except Exception as e:
+            print(f"Ошибка отправки активностей: {e}")
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=activities_text)
 
 # Главная функция утреннего дайджеста
 async def send_daily_digest():
@@ -543,31 +663,32 @@ async def send_daily_digest():
 
 # Функция дайджеста новостей (без цен, только новости и дедлайны)
 async def send_news_digest():
-    """Анализ новостей и поиск критических триггеров без вывода цен"""
+    """Анализ новостей и поиск критических триггеров только по проектам из Airdrops"""
     await bot.send_message(
         chat_id=ADMIN_CHAT_ID,
-        text="📰 Начинаю поиск важных новостей и дедлайнов по вашим проектам..."
+        text="📰 Начинаю поиск важных новостей и дедлайнов по вашим активностям..."
     )
 
     loop = asyncio.get_event_loop()
-    projects_data = await loop.run_in_executor(None, get_projects_from_sheet)
+    # Читаем только лист Airdrops для анализа новостей
+    airdrops_data = await loop.run_in_executor(None, get_airdrops_activities)
 
-    if not projects_data:
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Не удалось загрузить данные из Google Таблицы.")
+    if not airdrops_data:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text="❌ Нет активностей для мониторинга в листе Airdrops.")
         return
 
     important_updates = []
     silent_projects_count = 0
 
-    for p in projects_data:
-        name = p["name"]
+    for activity in airdrops_data:
+        project = activity["project"]
 
         # Ищем важные новости через ИИ
-        report = await loop.run_in_executor(None, analyze_project_news, name)
+        report = await loop.run_in_executor(None, analyze_project_news, project)
         if report.lower() == "тишина":
             silent_projects_count += 1
         else:
-            important_updates.append(f"🔥 <b>{name}</b>:\n{report}")
+            important_updates.append(f"🔥 <b>{project}</b>:\n{report}")
 
         await asyncio.sleep(2)
 
@@ -577,7 +698,7 @@ async def send_news_digest():
         if silent_projects_count > 0:
             result_text += f"\n\n🤫 По остальным проектам ({silent_projects_count} шт.) - важных новостей не обнаружено."
     else:
-        result_text = f"👌 По всем проектам из таблицы в плане новостей сейчас полное затишье. Критических дедлайнов нет."
+        result_text = f"👌 По всем проектам из активностей в плане новостей сейчас полное затишье. Критических дедлайнов нет."
 
     try:
         await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text, parse_mode="HTML")

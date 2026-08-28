@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
 from openai import OpenAI
 from tavily import TavilyClient
@@ -123,6 +123,124 @@ def analyze_project_news(project_name):
         return "Ошибка поиска новостей"
     return analyze_with_openai(project_name, search_result)
 
+# --- МОДУЛЬ MARKET PULSE (РЫНОЧНЫЙ ПУЛЬС) ---
+def get_fear_greed_index():
+    """Получает индекс страха и жадности с API"""
+    try:
+        url = "https://api.alternative.me/fng/"
+        response = requests.get(url, timeout=5).json()
+
+        if "data" in response and len(response["data"]) > 0:
+            data = response["data"][0]
+            value = int(data.get("value", 0))
+            classification = data.get("value_classification", "Unknown")
+            timestamp = data.get("timestamp", "")
+
+            return {
+                "value": value,
+                "classification": classification,
+                "timestamp": timestamp
+            }
+        return None
+    except Exception as e:
+        print(f"Ошибка получения Fear & Greed Index: {e}")
+        return None
+
+def get_btc_price():
+    """Получает текущую цену BTC и изменение за 24ч"""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {"ids": "bitcoin", "vs_currencies": "usd", "include_24hr_change": "true"}
+        response = requests.get(url, params=params, timeout=5).json()
+
+        if "bitcoin" in response:
+            price = response["bitcoin"]["usd"]
+            change = response["bitcoin"]["usd_24h_change"]
+            return price, change
+        return None, None
+    except Exception as e:
+        print(f"Ошибка получения цены BTC: {e}")
+        return None, None
+
+async def get_market_pulse_text():
+    """Формирует текст рыночного пульса"""
+    loop = asyncio.get_event_loop()
+
+    # Получаем индекс страха/жадности
+    fng_data = await loop.run_in_executor(None, get_fear_greed_index)
+
+    # Получаем цену BTC
+    btc_price, btc_change = await loop.run_in_executor(None, get_btc_price)
+
+    if not fng_data:
+        return "🌡 <b>Рыночный пульс:</b> данные недоступны"
+
+    # Эмодзи для статуса
+    status_emoji = {
+        "Extreme Fear": "😱",
+        "Fear": "😰",
+        "Neutral": "😐",
+        "Greed": "😏",
+        "Extreme Greed": "🤑"
+    }
+
+    emoji = status_emoji.get(fng_data["classification"], "📊")
+
+    pulse_text = (
+        f"🌡 <b>Рыночный пульс:</b>\n"
+        f"{emoji} Fear & Greed Index: <b>{fng_data['value']}/100</b> ({fng_data['classification']})\n"
+    )
+
+    if btc_price and btc_change is not None:
+        change_str = f"+{btc_change:.1f}%" if btc_change >= 0 else f"{btc_change:.1f}%"
+        pulse_text += f"₿ Bitcoin: <b>${btc_price:,.0f}</b> ({change_str} за 24ч)"
+
+    return pulse_text
+
+# Функция поиска причины волатильности через Tavily и OpenAI
+def search_volatility_reason(project_name):
+    """Ищет причину резкого изменения цены токена"""
+    try:
+        tavily = TavilyClient(api_key=TAVILY_API_KEY)
+        search_query = f"{project_name} token crypto why price surge dump news"
+        search_result = tavily.search(query=search_query, max_results=5, topic="news")
+
+        if not search_result or "results" not in search_result:
+            return "Не удалось найти свежие новости о причине движения цены."
+
+        # Формируем текст для анализа
+        news_text = ""
+        for item in search_result["results"]:
+            title = item.get("title", "")
+            url = item.get("url", "")
+            snippet = item.get("content", "")
+            news_text += f"Заголовок: {title}\nURL: {url}\nОписание: {snippet}\n\n"
+
+        # Анализируем через OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        prompt = f"""
+        Ты - крипто-аналитик. Объясни в 2-3 предложениях, почему резко изменилась цена токена {project_name}.
+
+        Ищи конкретные триггеры: листинг на бирже, важные новости, взлом, регуляторные решения, действия китов, технические проблемы.
+
+        Если причина не ясна из новостей, так и скажи честно.
+        Включай HTML-ссылки на источники: <a href="URL">текст</a>
+
+        Данные:
+        {news_text}
+        """
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
+
+        return response.choices[0].message.content.strip()
+
+    except Exception as e:
+        return f"Ошибка поиска: {str(e)}"
+
 # --- МОДУЛЬ АЛЕРТОВ ВОЛАТИЛЬНОСТИ ---
 async def check_volatility_alerts():
     """Проверяет волатильность монет каждые 15 минут и отправляет алерты при |change_24h| >= 15%"""
@@ -163,8 +281,18 @@ async def check_volatility_alerts():
                 f"⚠️ Высокая волатильность!"
             )
 
+            # Добавляем инлайн-кнопку для исследования причины
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔍 Узнать причину (ИИ-ресерч)", callback_data=f"why_{coin_name}")]
+            ])
+
             try:
-                await bot.send_message(chat_id=ADMIN_CHAT_ID, text=alert_text, parse_mode="HTML")
+                await bot.send_message(
+                    chat_id=ADMIN_CHAT_ID,
+                    text=alert_text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard
+                )
                 # Обновляем кэш
                 volatility_alerts_cache[coin_name] = now
                 print(f"Алерт отправлен для {coin_name}: {change24h:+.2f}%")
@@ -175,7 +303,14 @@ async def check_volatility_alerts():
 
 # Главная функция утреннего дайджеста
 async def send_daily_digest():
-    await bot.send_message(chat_id=ADMIN_CHAT_ID, text="🔍 Начинаю аудит портфолио и поиск крипто-новостей...")
+    # Получаем рыночный пульс для шапки
+    pulse_text = await get_market_pulse_text()
+
+    await bot.send_message(
+        chat_id=ADMIN_CHAT_ID,
+        text=f"{pulse_text}\n\n🔍 Начинаю аудит портфолио и поиск крипто-новостей...",
+        parse_mode="HTML"
+    )
 
     loop = asyncio.get_event_loop()
     projects_data = await loop.run_in_executor(None, get_projects_from_sheet)
@@ -236,10 +371,20 @@ async def start_cmd(message: Message):
         await message.answer("У вас нет доступа к этому боту.")
         return
 
+    # Инлайн-меню с кнопками
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Портфель", callback_data="portfolio")],
+        [InlineKeyboardButton(text="📰 Дайджест дедлайнов", callback_data="digest")],
+        [InlineKeyboardButton(text="🌡 Пульс рынка", callback_data="pulse")]
+    ])
+
     await message.answer(
         f"Привет! Твой крипто-терминал обновлен.\n\n"
         f"Доступные команды:\n"
-        f"/check - запустить аудит цен и новостей прямо сейчас."
+        f"/check - запустить аудит цен и новостей\n"
+        f"/pulse - проверить рыночный пульс\n\n"
+        f"Или используй кнопки ниже:",
+        reply_markup=keyboard
     )
 
 @dp.message(Command("check"))
@@ -247,6 +392,53 @@ async def manual_check(message: Message):
     if message.from_user.id != ADMIN_CHAT_ID:
         return
     await send_daily_digest()
+
+@dp.message(Command("pulse"))
+async def pulse_cmd(message: Message):
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    pulse_text = await get_market_pulse_text()
+    await message.answer(pulse_text, parse_mode="HTML")
+
+# --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
+@dp.callback_query(lambda c: c.data and c.data.startswith("why_"))
+async def handle_volatility_research(callback: CallbackQuery):
+    """Обработчик кнопки 'Узнать причину' для алертов волатильности"""
+    await callback.answer("Ищу причину скачка цен...")
+
+    # Извлекаем название монеты из callback_data
+    coin_name = callback.data.replace("why_", "")
+
+    # Показываем индикатор загрузки
+    await callback.message.answer("🔎 Анализирую причины движения цены...")
+
+    # Выполняем поиск причины
+    loop = asyncio.get_event_loop()
+    reason = await loop.run_in_executor(None, search_volatility_reason, coin_name)
+
+    # Отправляем результат
+    result_text = f"🔍 <b>Причина волатильности {coin_name.upper()}:</b>\n\n{reason}"
+    await callback.message.answer(result_text, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "portfolio")
+async def handle_portfolio_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Портфель'"""
+    await callback.answer()
+    await send_daily_digest()
+
+@dp.callback_query(lambda c: c.data == "digest")
+async def handle_digest_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Дайджест дедлайнов'"""
+    await callback.answer()
+    await send_daily_digest()
+
+@dp.callback_query(lambda c: c.data == "pulse")
+async def handle_pulse_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Пульс рынка'"""
+    await callback.answer()
+    pulse_text = await get_market_pulse_text()
+    await callback.message.answer(pulse_text, parse_mode="HTML")
 
 async def main():
     # Запуск утреннего дайджеста в 09:00

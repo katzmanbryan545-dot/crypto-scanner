@@ -10,21 +10,31 @@ from aiogram.filters import Command
 from openai import OpenAI
 from tavily import TavilyClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
+
+# Загрузка переменных окружения из .env файла
+load_dotenv()
 
 # --- НАСТРОЙКА КЛЮЧЕЙ И ТАБЛИЦЫ ЧЕРЕЗ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID")
 MY_TELEGRAM_ID = os.getenv("MY_TELEGRAM_ID")
 
-if not all([TELEGRAM_TOKEN, OPENAI_API_KEY, TAVILY_API_KEY, GOOGLE_SHEETS_ID, MY_TELEGRAM_ID]):
-    raise ValueError("Отсутствуют обязательные переменные окружения: TELEGRAM_TOKEN, OPENAI_API_KEY, TAVILY_API_KEY, GOOGLE_SHEETS_ID, MY_TELEGRAM_ID")
+if not all([TELEGRAM_TOKEN, OPENROUTER_API_KEY, TAVILY_API_KEY, GOOGLE_SHEETS_ID, MY_TELEGRAM_ID]):
+    raise ValueError("Отсутствуют обязательные переменные окружения: TELEGRAM_TOKEN, OPENROUTER_API_KEY, TAVILY_API_KEY, GOOGLE_SHEETS_ID, MY_TELEGRAM_ID")
 
 ADMIN_CHAT_ID = int(MY_TELEGRAM_ID)
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
+
+# Инициализация OpenRouter клиента
+openai_client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=OPENROUTER_API_KEY,
+)
 
 # Кэш алертов волатильности: {coin_name: last_alert_timestamp}
 volatility_alerts_cache = {}
@@ -82,8 +92,6 @@ def search_news_tavily(project_name):
 # Функция анализа новостей через OpenAI
 def analyze_with_openai(project_name, search_result):
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
-
         # Формируем текст с сохранением HTML-ссылок
         news_text = ""
         if search_result and "results" in search_result:
@@ -107,8 +115,8 @@ def analyze_with_openai(project_name, search_result):
         {news_text}
         """
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai_client.chat.completions.create(
+            model="deepseek/deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1
         )
@@ -216,8 +224,7 @@ def search_volatility_reason(project_name):
             snippet = item.get("content", "")
             news_text += f"Заголовок: {title}\nURL: {url}\nОписание: {snippet}\n\n"
 
-        # Анализируем через OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        # Анализируем через OpenRouter
         prompt = f"""
         Ты - крипто-аналитик. Объясни в 2-3 предложениях, почему резко изменилась цена токена {project_name}.
 
@@ -230,8 +237,8 @@ def search_volatility_reason(project_name):
         {news_text}
         """
 
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        response = openai_client.chat.completions.create(
+            model="deepseek/deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
@@ -330,7 +337,7 @@ async def send_daily_digest():
 
         # 1. Проверяем цену монеты на бирже (async wrapper)
         curr_price, change24h = await loop.run_in_executor(None, get_current_crypto_price, name)
-        if curr_price:
+        if curr_price and change24h is not None:
             has_prices = True
             change_str = f"+{change24h:.1f}%" if change24h >= 0 else f"{change24h:.1f}%"
             prices_text += f"▪️ <b>{name.upper()}</b>: ${curr_price} ({change_str})"
@@ -448,7 +455,7 @@ async def main():
     scheduler.add_job(check_volatility_alerts, "interval", minutes=15)
 
     scheduler.start()
-    print("✅ Бот запущен. Утренний дайджест: 09:00. Проверка волатильности: каждые 15 минут.")
+    print("[OK] Bot zapuschen. Utrenniy didzhest: 09:00. Proverka volatilnosti: kazhdye 15 minut.")
 
     await dp.start_polling(bot)
 

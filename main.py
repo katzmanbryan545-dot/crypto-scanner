@@ -108,7 +108,12 @@ def analyze_with_openai(project_name, search_result):
 
         Если по проекту идет обычное затишье и критических новостей/дедлайнов нет, ответь ОДНИМ словом: "Тишина".
 
-        ВАЖНО: Если находишь важные новости, ОБЯЗАТЕЛЬНО включи кликабельные HTML-ссылки в формате <a href="URL">текст</a> на первоисточники.
+        ВАЖНО HTML-РАЗМЕТКА:
+        - Используй ТОЛЬКО теги: <b>, </b>, <i>, </i>, <a href="URL">, </a>
+        - НИКОГДА не используй символы < и > в обычном тексте
+        - НЕ используй неразрешенные теги (например <code>, <pre>, <u>)
+        - Если находишь важные новости, включи кликабельные ссылки: <a href="URL">текст</a>
+
         Пиши строго без воды. Используй только обычные дефисы вместо длинных тире.
 
         Данные из сети:
@@ -122,14 +127,23 @@ def analyze_with_openai(project_name, search_result):
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"Ошибка анализа {project_name}: {str(e)}"
+        error_msg = f"Ошибка OpenRouter (анализ {project_name}): {str(e)}"
+        print(error_msg)
+        return error_msg
 
 # Функция анализа новостей проекта (обертка для async)
 def analyze_project_news(project_name):
-    search_result = search_news_tavily(project_name)
-    if not search_result:
-        return "Ошибка поиска новостей"
-    return analyze_with_openai(project_name, search_result)
+    try:
+        search_result = search_news_tavily(project_name)
+        if not search_result:
+            error_msg = f"❌ Ошибка Tavily: не удалось найти новости для {project_name}"
+            print(error_msg)
+            return error_msg
+        return analyze_with_openai(project_name, search_result)
+    except Exception as e:
+        error_msg = f"❌ Ошибка поиска новостей ({project_name}): {str(e)}"
+        print(error_msg)
+        return error_msg
 
 # --- МОДУЛЬ MARKET PULSE (РЫНОЧНЫЙ ПУЛЬС) ---
 def get_fear_greed_index():
@@ -231,7 +245,11 @@ def search_volatility_reason(project_name):
         Ищи конкретные триггеры: листинг на бирже, важные новости, взлом, регуляторные решения, действия китов, технические проблемы.
 
         Если причина не ясна из новостей, так и скажи честно.
-        Включай HTML-ссылки на источники: <a href="URL">текст</a>
+
+        ВАЖНО HTML-РАЗМЕТКА:
+        - Используй ТОЛЬКО теги: <b>, </b>, <i>, </i>, <a href="URL">, </a>
+        - НИКОГДА не используй символы < и > в обычном тексте
+        - Включай ссылки на источники: <a href="URL">текст</a>
 
         Данные:
         {news_text}
@@ -246,7 +264,9 @@ def search_volatility_reason(project_name):
         return response.choices[0].message.content.strip()
 
     except Exception as e:
-        return f"Ошибка поиска: {str(e)}"
+        error_msg = f"❌ Ошибка поиска причины волатильности: {str(e)}"
+        print(error_msg)
+        return error_msg
 
 # --- МОДУЛЬ АЛЕРТОВ ВОЛАТИЛЬНОСТИ ---
 async def check_volatility_alerts():
@@ -310,14 +330,31 @@ async def check_volatility_alerts():
 
 # Главная функция утреннего дайджеста
 async def send_daily_digest():
-    # Получаем рыночный пульс для шапки
-    pulse_text = await get_market_pulse_text()
+    try:
+        # Получаем рыночный пульс для шапки
+        pulse_text = await get_market_pulse_text()
 
-    await bot.send_message(
-        chat_id=ADMIN_CHAT_ID,
-        text=f"{pulse_text}\n\n🔍 Начинаю аудит портфолио и поиск крипто-новостей...",
-        parse_mode="HTML"
-    )
+        try:
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"{pulse_text}\n\n🔍 Начинаю аудит портфолио и поиск крипто-новостей...",
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"Ошибка отправки начального сообщения с HTML: {e}")
+            await bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"{pulse_text}\n\nНачинаю аудит портфолио и поиск крипто-новостей..."
+            )
+    except Exception as e:
+        error_msg = f"❌ Ошибка получения рыночного пульса: {str(e)}"
+        print(error_msg)
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=error_msg)
+        # Продолжаем без пульса
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text="🔍 Начинаю аудит портфолио и поиск крипто-новостей..."
+        )
 
     loop = asyncio.get_event_loop()
     projects_data = await loop.run_in_executor(None, get_projects_from_sheet)
@@ -360,7 +397,13 @@ async def send_daily_digest():
 
     # Отправляем блок цен (если нашли торгующиеся токены)
     if has_prices:
-        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=prices_text, parse_mode="HTML")
+        try:
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=prices_text, parse_mode="HTML")
+        except Exception as e:
+            print(f"Ошибка отправки цен с HTML: {e}")
+            # Отправляем без HTML разметки как фоллбэк
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=prices_text)
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Ошибка HTML разметки: {str(e)}")
 
     # Отправляем блок новостей
     if important_updates:
@@ -370,7 +413,13 @@ async def send_daily_digest():
     else:
         result_text = f"👌 По всем проектам из таблицы в плане новостей сейчас полное затишье. Критических дедлайнов нет."
 
-    await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text, parse_mode="HTML")
+    try:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text, parse_mode="HTML")
+    except Exception as e:
+        print(f"Ошибка отправки новостей с HTML: {e}")
+        # Отправляем без HTML разметки как фоллбэк
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=result_text)
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Ошибка HTML разметки в новостях: {str(e)}")
 
 @dp.message(Command("start"))
 async def start_cmd(message: Message):

@@ -1,0 +1,6 @@
+aiogram==3.13.1
+pandas
+requests
+apscheduler
+openai
+tavily-python

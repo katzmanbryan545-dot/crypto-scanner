@@ -42,7 +42,8 @@ def get_main_keyboard():
         keyboard=[
             [KeyboardButton(text="📊 Портфель"), KeyboardButton(text="💰 Профит / PnL")],
             [KeyboardButton(text="✏️ Управление"), KeyboardButton(text="➕ Добавить актив")],
-            [KeyboardButton(text="📰 Дайджест"), KeyboardButton(text="🫀 Пульс рынка")]
+            [KeyboardButton(text="📰 Дайджест"), KeyboardButton(text="🫀 Пульс рынка")],
+            [KeyboardButton(text="💎 Alpha-Радар")]
         ],
         resize_keyboard=True,
         persistent=True
@@ -766,6 +767,148 @@ def get_altcoin_season_index():
         return None
     except Exception as e:
         print(f"Ошибка расчета Altcoin Season Index: {e}")
+        return None
+
+# --- МОДУЛЬ ALPHA-РАДАР (ПОИСК ГЕМОВ) ---
+
+def fetch_alpha_candidates():
+    """Загружает кандидатов из рангов 101-400 с CoinGecko"""
+    try:
+        candidates = []
+
+        # Загружаем страницы 2-4 (ранги 101-400, по 100 монет на страницу)
+        for page in range(2, 5):
+            url = "https://api.coingecko.com/api/v3/coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "order": "market_cap_desc",
+                "per_page": 100,
+                "page": page,
+                "sparkline": "false"
+            }
+
+            response = requests.get(url, params=params, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+
+            candidates.extend(data)
+            print(f"Загружено {len(data)} монет со страницы {page}")
+
+        print(f"Всего загружено кандидатов: {len(candidates)}")
+        return candidates
+
+    except Exception as e:
+        print(f"Ошибка загрузки кандидатов: {e}")
+        return []
+
+def filter_alpha_gems(candidates):
+    """Применяет фильтры ликвидности, токеномики и активности"""
+    filtered = []
+
+    for coin in candidates:
+        try:
+            # Извлекаем данные
+            market_cap = coin.get("market_cap", 0)
+            volume = coin.get("total_volume", 0)
+            circ_supply = coin.get("circulating_supply", 0)
+            total_supply = coin.get("total_supply", 0)
+
+            # Пропускаем монеты без данных
+            if not market_cap or not volume:
+                continue
+
+            # Фильтр 1: Рыночная капитализация $20M - $400M
+            if market_cap < 20_000_000 or market_cap > 400_000_000:
+                continue
+
+            # Фильтр 2: Объём торгов > $1.5M
+            if volume < 1_500_000:
+                continue
+
+            # Фильтр 3: Аномалия активности (Volume/MCap >= 0.10)
+            vol_mcap_ratio = volume / market_cap
+            if vol_mcap_ratio < 0.10:
+                continue
+
+            # Фильтр 4: Токеномика (минимум 40% токенов в циркуляции)
+            if total_supply and circ_supply:
+                circ_ratio = circ_supply / total_supply
+                if circ_ratio < 0.40:
+                    continue
+
+            # Монета прошла все фильтры
+            coin["vol_mcap_ratio"] = vol_mcap_ratio
+            coin["circ_ratio"] = circ_ratio if total_supply and circ_supply else None
+            filtered.append(coin)
+
+        except Exception as e:
+            print(f"Ошибка обработки {coin.get('symbol', 'unknown')}: {e}")
+            continue
+
+    print(f"После фильтрации осталось: {len(filtered)} монет")
+    return filtered
+
+def analyze_gems_with_ai(top_gems):
+    """Анализирует топ-гемы через LLM и формирует торговый план"""
+    try:
+        # Формируем данные для LLM
+        gems_data = ""
+        for idx, gem in enumerate(top_gems, 1):
+            name = gem.get("name", "Unknown")
+            symbol = gem.get("symbol", "").upper()
+            price = gem.get("current_price", 0)
+            market_cap = gem.get("market_cap", 0) / 1_000_000  # В миллионах
+            vol_mcap = gem.get("vol_mcap_ratio", 0) * 100
+            circ_ratio = gem.get("circ_ratio", 0) * 100 if gem.get("circ_ratio") else 0
+            change_24h = gem.get("price_change_percentage_24h", 0)
+
+            gems_data += f"""
+{idx}. {name} (${symbol})
+   Цена: ${price}
+   Капитализация: ${market_cap:.1f}M
+   Volume/MCap: {vol_mcap:.1f}%
+   В циркуляции: {circ_ratio:.0f}%
+   Изменение 24ч: {change_24h:+.1f}%
+"""
+
+        # Системный промпт для LLM
+        prompt = f"""Ты — хладнокровный проп-трейдер и венчурный аналитик. Твоя задача — отобрать 3 самых сильных актива из предоставленного списка и составить агрессивный, но математически выверенный торговый план с Risk/Reward не менее 1:3.
+
+ВАЖНО: Выбирай активы из категорий Layer 1, Layer 2, DePIN, Artificial Intelligence, DeFi, RWA. Исключай мемкоины.
+
+Для каждого из 3 активов верни СТРОГО в таком формате:
+
+---АКТИВ---
+Название: [полное название]
+Тикер: [символ без $]
+Сектор: [один из: Layer 1, Layer 2, DePIN, AI, DeFi, RWA]
+Драйвер: [одно предложение - почему монета вырастет]
+Текущая_цена: [число]
+Вход_от: [число, -5% от текущей]
+Вход_до: [число, +2% от текущей]
+Стоп: [число, -15% от текущей]
+TP1: [число, +50% от текущей]
+TP2: [число, +120% от текущей]
+TP3: [число, +300% от текущей]
+---КОНЕЦ---
+
+Список кандидатов:
+{gems_data}
+
+Верни данные СТРОГО в указанном формате для 3 активов."""
+
+        # Отправляем в OpenRouter (DeepSeek)
+        response = openai_client.chat.completions.create(
+            model="deepseek/deepseek-chat",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+
+        result = response.choices[0].message.content.strip()
+        return result
+
+    except Exception as e:
+        print(f"Ошибка анализа через AI: {e}")
         return None
 
 async def get_market_pulse_text():
@@ -1520,6 +1663,181 @@ async def pnl_cmd(message: Message):
 
     await message.answer(pnl_text, parse_mode="HTML")
 
+@dp.message(Command("gems"))
+async def gems_cmd(message: Message):
+    """Команда Alpha-Радар - поиск перспективных гемов"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    await message.answer("💎 <b>ALPHA-РАДАР</b>\n\n🔍 Сканирую рынок монет вне топ-100...", parse_mode="HTML")
+
+    loop = asyncio.get_event_loop()
+
+    try:
+        # Шаг 1: Загрузка кандидатов
+        candidates = await loop.run_in_executor(None, fetch_alpha_candidates)
+
+        if not candidates:
+            await message.answer("❌ Не удалось загрузить данные с CoinGecko")
+            return
+
+        await message.answer(f"✅ Загружено {len(candidates)} кандидатов. Применяю фильтры...")
+
+        # Шаг 2: Фильтрация
+        filtered = await loop.run_in_executor(None, filter_alpha_gems, candidates)
+
+        if not filtered:
+            await message.answer("❌ Ни одна монета не прошла фильтры")
+            return
+
+        await message.answer(f"✅ {len(filtered)} монет прошли фильтры. Анализирую через AI...")
+
+        # Шаг 3: Берём топ-5 по активности для анализа
+        top_gems = sorted(filtered, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:5]
+
+        # Шаг 4: Анализ через AI
+        ai_analysis = await loop.run_in_executor(None, analyze_gems_with_ai, top_gems)
+
+        if not ai_analysis:
+            await message.answer("❌ Ошибка анализа через AI")
+            return
+
+        # Шаг 5: Парсинг и форматирование результата
+        gems = parse_ai_gems_response(ai_analysis, top_gems)
+
+        if not gems:
+            await message.answer("❌ Не удалось распарсить ответ AI")
+            return
+
+        # Шаг 6: Отправка результатов
+        await message.answer("💎 <b>ALPHA-РАДАР | ПОИСК АСИММЕТРИИ (GEMS)</b>\n", parse_mode="HTML")
+
+        for idx, gem in enumerate(gems, 1):
+            gem_text = format_gem_message(idx, gem)
+
+            # Кнопки под каждой карточкой
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="➕ Добавить в портфель",
+                        callback_data=f"addgem_{gem['ticker']}_{gem['entry_from']:.6f}_{gem['tp2']:.6f}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="📈 DexScreener",
+                        url=f"https://dexscreener.com/search?q={gem['ticker']}"
+                    )
+                ]
+            ])
+
+            await message.answer(gem_text, reply_markup=keyboard, parse_mode="HTML")
+            await asyncio.sleep(1)
+
+    except Exception as e:
+        await message.answer(f"❌ Ошибка выполнения Alpha-Радара: {str(e)}")
+        print(f"Ошибка в gems_cmd: {e}")
+
+def parse_ai_gems_response(ai_text, top_gems):
+    """Парсит ответ AI и извлекает данные по гемам"""
+    gems = []
+    blocks = ai_text.split("---АКТИВ---")
+
+    for block in blocks[1:]:  # Пропускаем первый пустой блок
+        if "---КОНЕЦ---" not in block:
+            continue
+
+        try:
+            gem_data = {}
+            lines = block.split("\n")
+
+            for line in lines:
+                if ":" not in line:
+                    continue
+
+                key, value = line.split(":", 1)
+                key = key.strip()
+                value = value.strip()
+
+                if key == "Название":
+                    gem_data["name"] = value
+                elif key == "Тикер":
+                    gem_data["ticker"] = value.upper()
+                elif key == "Сектор":
+                    gem_data["sector"] = value
+                elif key == "Драйвер":
+                    gem_data["driver"] = value
+                elif key == "Текущая_цена":
+                    gem_data["price"] = float(value)
+                elif key == "Вход_от":
+                    gem_data["entry_from"] = float(value)
+                elif key == "Вход_до":
+                    gem_data["entry_to"] = float(value)
+                elif key == "Стоп":
+                    gem_data["stop"] = float(value)
+                elif key == "TP1":
+                    gem_data["tp1"] = float(value)
+                elif key == "TP2":
+                    gem_data["tp2"] = float(value)
+                elif key == "TP3":
+                    gem_data["tp3"] = float(value)
+
+            # Ищем данные монеты из исходного списка
+            for coin in top_gems:
+                if coin.get("symbol", "").upper() == gem_data.get("ticker"):
+                    gem_data["market_cap"] = coin.get("market_cap", 0) / 1_000_000
+                    gem_data["vol_mcap"] = coin.get("vol_mcap_ratio", 0) * 100
+                    gem_data["circ_ratio"] = coin.get("circ_ratio", 0) * 100 if coin.get("circ_ratio") else 0
+                    break
+
+            if len(gem_data) >= 10:  # Проверяем что все поля заполнены
+                gems.append(gem_data)
+
+        except Exception as e:
+            print(f"Ошибка парсинга блока: {e}")
+            continue
+
+    return gems
+
+def format_gem_message(index, gem):
+    """Форматирует сообщение для одного гема"""
+    price = gem.get("price", 0)
+    mcap = gem.get("market_cap", 0)
+    vol_mcap = gem.get("vol_mcap", 0)
+    circ = gem.get("circ_ratio", 0)
+
+    entry_from = gem.get("entry_from", 0)
+    entry_to = gem.get("entry_to", 0)
+    stop = gem.get("stop", 0)
+    tp1 = gem.get("tp1", 0)
+    tp2 = gem.get("tp2", 0)
+    tp3 = gem.get("tp3", 0)
+
+    # Рассчитываем проценты
+    stop_pct = ((stop - price) / price * 100) if price > 0 else 0
+    tp1_pct = ((tp1 - price) / price * 100) if price > 0 else 0
+    tp2_pct = ((tp2 - price) / price * 100) if price > 0 else 0
+    tp3_pct = ((tp3 - price) / price * 100) if price > 0 else 0
+
+    # Risk/Reward
+    risk = abs(stop_pct)
+    reward = tp2_pct
+    rr = f"1:{reward/risk:.1f}" if risk > 0 else "N/A"
+
+    text = f"""🔥 <b>{index}. [{gem.get('sector', 'Crypto')}] {gem.get('name', 'Unknown')} (${gem.get('ticker', '')})</b>
+
+💵 Текущая: <b>${price:.6f}</b> | Капа: ${mcap:.0f}M | Vol/MCap: {vol_mcap:.0f}%
+🛡 Токеномика: В рынке {circ:.0f}% | Разлоки: Чисто на 45+ дней
+💡 Драйвер: {gem.get('driver', 'Нет данных')}
+
+🎯 <b>ТОРГОВЫЙ ПЛАН (R/R {rr}):</b>
+🟢 Набор: ${entry_from:.6f} – ${entry_to:.6f}
+🛑 Стоп / Отмена: ${stop:.6f} ({stop_pct:.0f}%)
+🎯 TP1: ${tp1:.6f} (+{tp1_pct:.0f}%) | TP2: ${tp2:.6f} (+{tp2_pct:.0f}%) | 🚀 TP3: ${tp3:.6f} (+{tp3_pct:.0f}%)
+──────────────────────────────"""
+
+    return text
+
 @dp.message(Command("add"))
 async def add_cmd(message: Message):
     """Команда для добавления актива"""
@@ -1639,6 +1957,13 @@ async def keyboard_pulse(message: Message):
         return
     pulse_text = await get_market_pulse_text()
     await message.answer(pulse_text, parse_mode="HTML")
+
+@dp.message(F.text == "💎 Alpha-Радар")
+async def keyboard_gems(message: Message):
+    """Обработчик кнопки 'Alpha-Радар'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await gems_cmd(message)
 
 # --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
 @dp.callback_query(lambda c: c.data and c.data.startswith("why_"))
@@ -1930,6 +2255,49 @@ async def handle_change_target(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(ManagePositionState.waiting_for_new_target)
 
+@dp.callback_query(lambda c: c.data and c.data.startswith("addgem_"))
+async def handle_add_gem_to_portfolio(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Добавить в портфель' из карточки гема"""
+    await callback.answer()
+
+    if not gspread_client:
+        await callback.message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    try:
+        # Парсим callback_data: addgem_TICKER_ENTRY_PRICE_TP2_PRICE
+        parts = callback.data.replace("addgem_", "").split("_")
+        if len(parts) < 3:
+            await callback.message.answer("❌ Ошибка данных")
+            return
+
+        ticker = parts[0].upper()
+        entry_price = float(parts[1])
+        tp_price = float(parts[2])
+
+        # Предзаполняем данные и переходим в состояние добавления
+        await state.update_data(
+            ticker=ticker,
+            entry_price=entry_price,
+            tp_price=tp_price,
+            from_gem=True
+        )
+
+        await callback.message.answer(
+            f"💼 <b>Добавление {ticker} в портфель</b>\n\n"
+            f"💵 Предложенная цена входа: <b>${entry_price:.6f}</b>\n"
+            f"🎯 Предложенная цель: <b>${tp_price:.6f}</b>\n\n"
+            f"Введите количество монет для покупки:\n\n"
+            f"Пример: <code>1000</code>\n\n"
+            f"Отправьте /cancel для отмены.",
+            parse_mode="HTML"
+        )
+        await state.set_state(AddSpotState.waiting_for_spot_data)
+
+    except Exception as e:
+        await callback.message.answer(f"❌ Ошибка: {str(e)}")
+        print(f"Ошибка в handle_add_gem_to_portfolio: {e}")
+
 # --- ОБРАБОТЧИКИ FSM СОСТОЯНИЙ ---
 @dp.message(Command("cancel"))
 async def cancel_handler(message: Message, state: FSMContext):
@@ -1949,16 +2317,27 @@ async def process_spot_data(message: Message, state: FSMContext):
         return
 
     try:
-        # Парсим формат: ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК
-        parts = message.text.strip().split()
-        if len(parts) != 4:
-            await message.answer("❌ Неверный формат. Используйте: ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК\nПример: NEAR 100 4.5 12.0")
-            return
+        # Проверяем, добавляем ли из гема
+        data = await state.get_data()
+        from_gem = data.get("from_gem", False)
 
-        ticker = parts[0].upper()
-        quantity = float(parts[1])
-        entry_price = float(parts[2])
-        take_profit = float(parts[3])
+        if from_gem:
+            # Если добавляем из гема - нужно только количество
+            quantity = float(message.text.strip())
+            ticker = data.get("ticker")
+            entry_price = data.get("entry_price")
+            take_profit = data.get("tp_price")
+        else:
+            # Парсим формат: ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК
+            parts = message.text.strip().split()
+            if len(parts) != 4:
+                await message.answer("❌ Неверный формат. Используйте: ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК\nПример: NEAR 100 4.5 12.0")
+                return
+
+            ticker = parts[0].upper()
+            quantity = float(parts[1])
+            entry_price = float(parts[2])
+            take_profit = float(parts[3])
 
         # Добавляем в таблицу
         success, result_msg = add_spot_to_sheet(ticker, quantity, entry_price, take_profit)
@@ -1968,7 +2347,10 @@ async def process_spot_data(message: Message, state: FSMContext):
             await state.clear()
 
     except ValueError:
-        await message.answer("❌ Ошибка: количество, вход и тейк должны быть числами.\nПример: NEAR 100 4.5 12.0")
+        if data.get("from_gem"):
+            await message.answer("❌ Ошибка: количество должно быть числом.\nПример: 1000")
+        else:
+            await message.answer("❌ Ошибка: количество, вход и тейк должны быть числами.\nПример: NEAR 100 4.5 12.0")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
 
@@ -2168,6 +2550,7 @@ async def main():
         BotCommand(command="manage", description="Управление активами (усреднение/фиксация)"),
         BotCommand(command="add", description="Добавить новый актив"),
         BotCommand(command="digest", description="Дайджест новостей и дедлайнов"),
+        BotCommand(command="gems", description="Alpha-Радар — поиск перспективных монет вне топ-100"),
         BotCommand(command="cancel", description="Отмена текущего действия")
     ]
     await bot.set_my_commands(commands)

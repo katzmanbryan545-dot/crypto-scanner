@@ -121,19 +121,46 @@ def get_spot_positions_with_rows():
     """Получает список всех позиций из Spot листа с номерами строк"""
     try:
         if not gspread_client:
+            print("gspread_client не инициализирован")
             return []
 
         spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
-        worksheet = spreadsheet.get_worksheet(0)  # Spot лист
+        worksheet = spreadsheet.get_worksheet(0)  # Spot_Hold лист (первый лист)
         all_values = worksheet.get_all_values()
 
         positions = []
-        for idx, row in enumerate(all_values[1:], start=2):  # Пропускаем заголовок
+        for idx, row in enumerate(all_values[1:], start=2):  # Пропускаем заголовок, начинаем со строки 2
+            # Колонка A: Тикер
             if len(row) > 0 and row[0].strip():
                 ticker = row[0].strip().upper()
-                quantity = float(row[1]) if len(row) > 1 and row[1] else 0
-                entry_price = float(row[2]) if len(row) > 2 and row[2] else 0
-                take_profit = float(row[3]) if len(row) > 3 and row[3] else 0
+
+                # Пропускаем заголовок, если он попал в данные
+                if ticker.lower() in ["тикер", "ticker"]:
+                    continue
+
+                # Колонка B: Количество
+                quantity = 0
+                if len(row) > 1 and row[1]:
+                    try:
+                        quantity = float(str(row[1]).replace(",", ".").strip())
+                    except ValueError:
+                        quantity = 0
+
+                # Колонка C: Точка входа
+                entry_price = 0
+                if len(row) > 2 and row[2]:
+                    try:
+                        entry_price = float(str(row[2]).replace("$", "").replace(",", ".").strip())
+                    except ValueError:
+                        entry_price = 0
+
+                # Колонка D: Тейк-профит
+                take_profit = 0
+                if len(row) > 3 and row[3]:
+                    try:
+                        take_profit = float(str(row[3]).replace("$", "").replace(",", ".").strip())
+                    except ValueError:
+                        take_profit = 0
 
                 positions.append({
                     "row": idx,
@@ -143,6 +170,7 @@ def get_spot_positions_with_rows():
                     "take_profit": take_profit
                 })
 
+        print(f"Загружено позиций из Spot_Hold (с номерами строк): {len(positions)}")
         return positions
     except Exception as e:
         print(f"Error getting spot positions: {e}")
@@ -390,34 +418,44 @@ def fetch_all_prices():
 def get_spot_portfolio():
     """Читает спот-портфель: [Тикер, Количество, Вход, Тейк, Заметка]"""
     try:
-        # gid=0 обычно первый лист (Spot)
+        # gid=0 обычно первый лист (Spot_Hold)
         url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv&gid=0"
         df = pd.read_csv(url)
 
         spot_list = []
-        for _, row in df.iterrows():
+        # Начинаем со 2-й строки (индекс 1), пропускаем заголовок
+        for idx, row in df.iterrows():
+            # Колонка A (индекс 0): Тикер
             ticker = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-            if not ticker:
+            if not ticker or ticker.lower() in ["тикер", "ticker"]:  # Пропускаем заголовок
                 continue
 
-            # Колонки: Тикер, Количество, Вход, Тейк, Заметка
-            quantity = float(row.iloc[1]) if len(row) > 1 and pd.notna(row.iloc[1]) else 0
-            entry_price = None
-            take_profit = None
-            note = ""
+            # Колонка B (индекс 1): Количество
+            quantity = 0
+            if len(row) > 1 and pd.notna(row.iloc[1]):
+                try:
+                    quantity = float(str(row.iloc[1]).replace(",", ".").strip())
+                except ValueError:
+                    quantity = 0
 
+            # Колонка C (индекс 2): Точка входа
+            entry_price = None
             if len(row) > 2 and pd.notna(row.iloc[2]):
                 try:
                     entry_price = float(str(row.iloc[2]).replace("$", "").replace(",", ".").strip())
                 except ValueError:
                     pass
 
+            # Колонка D (индекс 3): Тейк-профит
+            take_profit = None
             if len(row) > 3 and pd.notna(row.iloc[3]):
                 try:
                     take_profit = float(str(row.iloc[3]).replace("$", "").replace(",", ".").strip())
                 except ValueError:
                     pass
 
+            # Колонка E (индекс 4): Заметка/Стратегия
+            note = ""
             if len(row) > 4 and pd.notna(row.iloc[4]):
                 note = str(row.iloc[4]).strip()
 
@@ -429,28 +467,35 @@ def get_spot_portfolio():
                 "note": note
             })
 
+        print(f"Загружено монет из Spot_Hold: {len(spot_list)}")
         return spot_list
     except Exception as e:
         print(f"Ошибка чтения спот-портфеля: {e}")
         return []
 
-# Функция чтения аирдропов из Google Таблицы (лист Airdrops)
+# Функция чтения аирдропов из Google Таблицы (лист Airdrop_Radar)
 def get_airdrops_activities():
     """Читает активности/аирдропы: [Проект, Тип, Дедлайн, Статус]"""
     try:
-        # gid=878500138 - лист Airdrops/Активности
+        # Пробуем читать второй лист (Airdrop_Radar)
+        # Сначала по gid, если не получится - по индексу
         url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv&gid=878500138"
         df = pd.read_csv(url)
 
         activities_list = []
         for _, row in df.iterrows():
+            # Колонка A: Проект
             project = str(row.iloc[0]).strip() if pd.notna(row.iloc[0]) else ""
-            if not project:
+            if not project or project.lower() in ["проект", "project"]:  # Пропускаем заголовок
                 continue
 
-            # Колонки: Проект, Тип, Дедлайн, Статус
+            # Колонка B: Тип
             activity_type = str(row.iloc[1]).strip() if len(row) > 1 and pd.notna(row.iloc[1]) else "Аирдроп"
+
+            # Колонка C: Дедлайн
             deadline = str(row.iloc[2]).strip() if len(row) > 2 and pd.notna(row.iloc[2]) else ""
+
+            # Колонка D: Статус
             status = str(row.iloc[3]).strip() if len(row) > 3 and pd.notna(row.iloc[3]) else "Активен"
 
             activities_list.append({
@@ -460,6 +505,7 @@ def get_airdrops_activities():
                 "status": status
             })
 
+        print(f"Загружено активностей из Airdrop_Radar: {len(activities_list)}")
         return activities_list
     except Exception as e:
         print(f"Ошибка чтения аирдропов: {e}")

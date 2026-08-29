@@ -48,7 +48,7 @@ COIN_MAP = {
     "DYM": "dymension",
     "APT": "aptos",
     "BONK": "bonk",
-    "APEX": "apex-token",
+    "APEX": "apex-token-2",
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
     "AVAX": "avalanche-2",
     "MATIC": "matic-network",
@@ -146,8 +146,8 @@ def get_spot_portfolio():
 def get_airdrops_activities():
     """Читает активности/аирдропы: [Проект, Тип, Дедлайн, Статус]"""
     try:
-        # gid=1 обычно второй лист (Airdrops)
-        url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv&gid=1"
+        # gid=878500138 - лист Airdrops/Активности
+        url = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_ID}/export?format=csv&gid=878500138"
         df = pd.read_csv(url)
 
         activities_list = []
@@ -527,26 +527,32 @@ async def send_portfolio_view():
                 current_price = coin_data.get("usd")
 
                 if current_price and current_price > 0:
-                    # Расчет PnL
-                    pnl = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                    # Расчет PnL с защитой от деления на 0
+                    pnl = 0
+                    if entry_price > 0:
+                        pnl = ((current_price - entry_price) / entry_price) * 100
                     emoji = "🟢" if pnl >= 0 else "🔴"
 
-                    # Расчет расстояния до тейка
+                    # Расчет расстояния до тейка с защитой от деления на 0
                     tp_gain = None
                     if tp_price > 0 and current_price > 0:
                         tp_gain = ((tp_price - current_price) / current_price) * 100
 
                     # Форматирование цен
                     price_fmt = f"{current_price:.6f}" if current_price < 0.01 else f"{current_price:.4f}"
-                    entry_fmt = f"{entry_price:.6f}" if entry_price < 0.01 else f"{entry_price:.4f}"
-                    tp_fmt = f"{tp_price:.6f}" if tp_price < 0.01 else f"{tp_price:.2f}"
+                    entry_fmt = f"{entry_price:.6f}" if entry_price < 0.01 and entry_price > 0 else f"{entry_price:.4f}" if entry_price > 0 else "N/A"
+                    tp_fmt = f"{tp_price:.6f}" if tp_price < 0.01 and tp_price > 0 else f"{tp_price:.2f}" if tp_price > 0 else "N/A"
 
-                    # Строка расстояния до тейка
-                    tp_str = f"+{tp_gain:.1f}%" if tp_gain is not None else "N/A"
+                    # Строка расстояния до тейка - строго N/A если невозможно рассчитать
+                    if tp_gain is not None and entry_price > 0 and current_price > 0:
+                        tp_str = f"+{tp_gain:.1f}%" if tp_gain >= 0 else f"{tp_gain:.1f}%"
+                    else:
+                        tp_str = "N/A"
 
                     # Формируем строку
+                    pnl_str = f"{pnl:+.1f}%" if entry_price > 0 else "N/A"
                     line = (
-                        f"{emoji} <b>{ticker}</b>: ${price_fmt} (Вход: ${entry_fmt} | Тейк: ${tp_fmt} | PnL: {pnl:+.1f}%)\n"
+                        f"{emoji} <b>{ticker}</b>: ${price_fmt} (Вход: ${entry_fmt} | Тейк: ${tp_fmt} | PnL: {pnl_str})\n"
                         f"   🎯 До тейка: {tp_str}\n"
                     )
                     spot_text += line

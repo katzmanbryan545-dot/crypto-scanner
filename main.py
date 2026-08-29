@@ -805,13 +805,24 @@ def filter_alpha_gems(candidates):
     """Применяет фильтры ликвидности, токеномики и активности"""
     filtered = []
 
+    # Черный список: старые токены экосистем 2017-2020 без активной разработки
+    blacklist = {
+        "ONG", "NEO", "GAS", "QTUM", "EOS", "IOTA", "XVG", "LSK",
+        "STRAT", "DCR", "ZEN", "WAVES", "NXT", "ARDR", "DGB"
+    }
+
     for coin in candidates:
         try:
             # Извлекаем данные
+            symbol = coin.get("symbol", "").upper()
             market_cap = coin.get("market_cap", 0)
             volume = coin.get("total_volume", 0)
             circ_supply = coin.get("circulating_supply", 0)
             total_supply = coin.get("total_supply", 0)
+
+            # Фильтр 0: Исключаем зомби-токены и динозавров
+            if symbol in blacklist:
+                continue
 
             # Пропускаем монеты без данных
             if not market_cap or not volume:
@@ -871,10 +882,26 @@ def analyze_gems_with_ai(top_gems):
    Изменение 24ч: {change_24h:+.1f}%
 """
 
-        # Системный промпт для LLM
-        prompt = f"""Ты — хладнокровный проп-трейдер и венчурный аналитик. Твоя задача — отобрать 3 самых сильных актива из предоставленного списка и составить агрессивный, но математически выверенный торговый план с Risk/Reward не менее 1:3.
+        # Улучшенный системный промпт для LLM
+        prompt = f"""Ты — профессиональный венчурный аналитик и криптотрейдер. Твоя задача — отобрать 3 самых перспективных актива из списка и составить точный торговый план с Risk/Reward не менее 1:3.
 
-ВАЖНО: Выбирай активы из категорий Layer 1, Layer 2, DePIN, Artificial Intelligence, DeFi, RWA. Исключай мемкоины.
+КРИТИЧЕСКИ ВАЖНО — ЗАПРЕТЫ:
+❌ НЕ используй общие фразы: "рост спроса на DeFi", "развитие экосистемы", "перспективное направление"
+❌ НЕ выбирай старые токены экосистем 2017-2020 без активной разработки (NEO, EOS, QTUM, IOTA, WAVES и подобные)
+❌ НЕ пиши банальности и маркетинговые клише
+
+ЧТО ПИСАТЬ В ДРАЙВЕРЕ (только конкретные факты):
+✅ Свежие листинги на крупных биржах (последние 2-3 месяца)
+✅ Технические запуски: запуск мейннета, хардфорк, обновление протокола
+✅ Ончейн-метрики: рост TVL, количество активных кошельков, объем транзакций
+✅ Интеграции с крупными проектами (конкретные названия и даты)
+✅ Институциональные инвестиции (фонды, раунды финансирования)
+✅ Реальные кейсы использования продукта
+
+ПРИОРИТЕТ ОТБОРА:
+1. Проекты текущего цикла (2024-2026) и прошлого (2021-2023)
+2. Layer 1, Layer 2, DePIN, AI, DeFi, RWA — с реальным продуктом
+3. Исключай мемкоины и токены без рабочего продукта
 
 Для каждого из 3 активов верни СТРОГО в таком формате:
 
@@ -882,7 +909,7 @@ def analyze_gems_with_ai(top_gems):
 Название: [полное название]
 Тикер: [символ без $]
 Сектор: [один из: Layer 1, Layer 2, DePIN, AI, DeFi, RWA]
-Драйвер: [одно предложение - почему монета вырастет]
+Драйвер: [ТОЛЬКО ФАКТЫ: конкретная метрика/событие/интеграция. Одно предложение, максимум 15 слов]
 Текущая_цена: [число]
 Вход_от: [число, -5% от текущей]
 Вход_до: [число, +2% от текущей]
@@ -895,13 +922,13 @@ TP3: [число, +300% от текущей]
 Список кандидатов:
 {gems_data}
 
-Верни данные СТРОГО в указанном формате для 3 активов."""
+Верни данные СТРОГО в указанном формате для 3 активов. В драйвере — только измеримые факты, никаких общих фраз."""
 
         # Отправляем в OpenRouter (DeepSeek)
         response = openai_client.chat.completions.create(
             model="deepseek/deepseek-chat",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            temperature=0.2
         )
 
         result = response.choices[0].message.content.strip()
@@ -1803,6 +1830,13 @@ def parse_ai_gems_response(ai_text, top_gems):
 
     return gems
 
+def format_price(price):
+    """Умное округление цен: 2 знака если > $1, иначе 4 знака"""
+    if price >= 1:
+        return f"{price:.2f}"
+    else:
+        return f"{price:.4f}"
+
 def format_gem_message(index, gem):
     """Форматирует сообщение для одного гема"""
     price = gem.get("price", 0)
@@ -1828,16 +1862,25 @@ def format_gem_message(index, gem):
     reward = tp2_pct
     rr = f"1:{reward/risk:.1f}" if risk > 0 else "N/A"
 
+    # Форматируем цены с умным округлением
+    price_str = format_price(price)
+    entry_from_str = format_price(entry_from)
+    entry_to_str = format_price(entry_to)
+    stop_str = format_price(stop)
+    tp1_str = format_price(tp1)
+    tp2_str = format_price(tp2)
+    tp3_str = format_price(tp3)
+
     text = f"""🔥 <b>{index}. [{gem.get('sector', 'Crypto')}] {gem.get('name', 'Unknown')} (${gem.get('ticker', '')})</b>
 
-💵 Текущая: <b>${price:.6f}</b> | Капа: ${mcap:.0f}M | Vol/MCap: {vol_mcap:.0f}%
+💵 Текущая: <b>${price_str}</b> | Капа: ${mcap:.0f}M | Vol/MCap: {vol_mcap:.0f}%
 🛡 Токеномика: В рынке {circ:.0f}% | Разлоки: Чисто на 45+ дней
 💡 Драйвер: {gem.get('driver', 'Нет данных')}
 
 🎯 <b>ТОРГОВЫЙ ПЛАН (R/R {rr}):</b>
-🟢 Набор: ${entry_from:.6f} – ${entry_to:.6f}
-🛑 Стоп / Отмена: ${stop:.6f} ({stop_pct:.0f}%)
-🎯 TP1: ${tp1:.6f} (+{tp1_pct:.0f}%) | TP2: ${tp2:.6f} (+{tp2_pct:.0f}%) | 🚀 TP3: ${tp3:.6f} (+{tp3_pct:.0f}%)
+🟢 Набор: ${entry_from_str} – ${entry_to_str}
+🛑 Стоп / Отмена: ${stop_str} ({stop_pct:.0f}%)
+🎯 TP1: ${tp1_str} (+{tp1_pct:.0f}%) | TP2: ${tp2_str} (+{tp2_pct:.0f}%) | 🚀 TP3: ${tp3_str} (+{tp3_pct:.0f}%)
 ──────────────────────────────"""
 
     return text

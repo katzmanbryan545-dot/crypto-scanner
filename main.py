@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import requests
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -34,6 +34,20 @@ class ManagePositionState(StatesGroup):
     waiting_for_sell_amount = State()
     waiting_for_sell_price = State()
     waiting_for_new_target = State()
+
+# --- ПОСТОЯННАЯ КЛАВИАТУРА ---
+def get_main_keyboard():
+    """Создает постоянную клавиатуру быстрого доступа"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📊 Портфель"), KeyboardButton(text="💰 Профит / PnL")],
+            [KeyboardButton(text="✏️ Управление"), KeyboardButton(text="➕ Добавить актив")],
+            [KeyboardButton(text="📰 Дайджест"), KeyboardButton(text="🫀 Пульс рынка")]
+        ],
+        resize_keyboard=True,
+        persistent=True
+    )
+    return keyboard
 
 # --- НАСТРОЙКА КЛЮЧЕЙ И ТАБЛИЦЫ ЧЕРЕЗ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -1078,7 +1092,7 @@ async def start_cmd(message: Message):
         return
 
     # Инлайн-меню с кнопками
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Портфель", callback_data="portfolio")],
         [InlineKeyboardButton(text="💰 Чистый профит / Статистика", callback_data="pnl")],
         [InlineKeyboardButton(text="✏️ Управление активами", callback_data="manage_assets")],
@@ -1098,7 +1112,13 @@ async def start_cmd(message: Message):
         f"/pulse - проверить рыночный пульс\n"
         f"/add - добавить актив в таблицу\n\n"
         f"Или используй кнопки ниже:",
-        reply_markup=keyboard
+        reply_markup=inline_keyboard
+    )
+
+    # Отправляем постоянную клавиатуру
+    await message.answer(
+        "📱 Используйте меню быстрого доступа:",
+        reply_markup=get_main_keyboard()
     )
 
 @dp.message(Command("portfolio"))
@@ -1220,6 +1240,79 @@ async def manage_cmd(message: Message):
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
     await message.answer("✏️ <b>Выберите актив для управления:</b>", reply_markup=keyboard, parse_mode="HTML")
+
+# --- ОБРАБОТЧИКИ ТЕКСТОВЫХ КНОПОК ПОСТОЯННОЙ КЛАВИАТУРЫ ---
+@dp.message(F.text == "📊 Портфель")
+async def keyboard_portfolio(message: Message):
+    """Обработчик кнопки 'Портфель'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await send_portfolio_view()
+
+@dp.message(F.text == "💰 Профит / PnL")
+async def keyboard_pnl(message: Message):
+    """Обработчик кнопки 'Профит / PnL'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    if not gspread_client:
+        await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    await message.answer("📊 Рассчитываю статистику портфеля...")
+
+    loop = asyncio.get_event_loop()
+    realized_profit = await loop.run_in_executor(None, get_realized_profit)
+    spot_positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+    prices_data = await loop.run_in_executor(None, fetch_all_prices)
+    unrealized_usd, unrealized_pct = await loop.run_in_executor(
+        None, calculate_unrealized_pnl, spot_positions, prices_data
+    )
+
+    total_profit = realized_profit + unrealized_usd
+    realized_str = f"+${realized_profit:.2f}" if realized_profit >= 0 else f"-${abs(realized_profit):.2f}"
+    unrealized_str = f"+${unrealized_usd:.2f}" if unrealized_usd >= 0 else f"-${abs(unrealized_usd):.2f}"
+    unrealized_pct_str = f"+{unrealized_pct:.1f}%" if unrealized_pct >= 0 else f"{unrealized_pct:.1f}%"
+    total_str = f"+${total_profit:.2f}" if total_profit >= 0 else f"-${abs(total_profit):.2f}"
+    emoji = "🟢" if total_profit >= 0 else "🔴"
+
+    pnl_text = (
+        f"📊 <b>Сводка доходности портфеля:</b>\n\n"
+        f"💰 Реализованная чистая прибыль: <b>{realized_str}</b>\n"
+        f"📈 Плавающий PnL (открытые позиции): <b>{unrealized_str}</b> ({unrealized_pct_str})\n"
+        f"{emoji} <b>Всего заработано: {total_str}</b>"
+    )
+
+    await message.answer(pnl_text, parse_mode="HTML")
+
+@dp.message(F.text == "✏️ Управление")
+async def keyboard_manage(message: Message):
+    """Обработчик кнопки 'Управление'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await manage_cmd(message)
+
+@dp.message(F.text == "➕ Добавить актив")
+async def keyboard_add(message: Message):
+    """Обработчик кнопки 'Добавить актив'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await add_cmd(message)
+
+@dp.message(F.text == "📰 Дайджест")
+async def keyboard_digest(message: Message):
+    """Обработчик кнопки 'Дайджест'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    await send_news_digest()
+
+@dp.message(F.text == "🫀 Пульс рынка")
+async def keyboard_pulse(message: Message):
+    """Обработчик кнопки 'Пульс рынка'"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+    pulse_text = await get_market_pulse_text()
+    await message.answer(pulse_text, parse_mode="HTML")
 
 # --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
 @dp.callback_query(lambda c: c.data and c.data.startswith("why_"))
@@ -1742,6 +1835,18 @@ async def process_target_change(message: Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {str(e)}")
 
 async def main():
+    # Регистрация команд бота в меню Telegram
+    commands = [
+        BotCommand(command="portfolio", description="Спот-портфель и радар активностей"),
+        BotCommand(command="pnl", description="Чистый профит и статистика"),
+        BotCommand(command="manage", description="Управление активами (усреднение/фиксация)"),
+        BotCommand(command="add", description="Добавить новый актив"),
+        BotCommand(command="digest", description="Дайджест новостей и дедлайнов"),
+        BotCommand(command="cancel", description="Отмена текущего действия")
+    ]
+    await bot.set_my_commands(commands)
+    print("[OK] Bot commands registered")
+
     # Запуск утреннего дайджеста в 09:00
     scheduler.add_job(send_daily_digest, "cron", hour=9, minute=0)
 

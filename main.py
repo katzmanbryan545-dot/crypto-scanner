@@ -1768,11 +1768,23 @@ async def gems_cmd(message: Message):
             await message.answer("❌ Ошибка анализа через AI")
             return
 
+        # Выводим сырой ответ AI для отладки
+        print("=" * 50)
+        print("ОТВЕТ AI:")
+        print(ai_analysis)
+        print("=" * 50)
+
         # Шаг 5: Парсинг и форматирование результата
         gems = parse_ai_gems_response(ai_analysis, top_gems)
 
         if not gems:
-            await message.answer("❌ Не удалось распарсить ответ AI")
+            await message.answer(
+                "❌ Не удалось распарсить ответ AI\n\n"
+                "Попробуйте запустить /gems еще раз через 1-2 минуты."
+            )
+            # Отправляем сырой ответ для диагностики
+            if len(ai_analysis) < 3000:
+                await message.answer(f"<code>{ai_analysis[:3000]}</code>", parse_mode="HTML")
             return
 
         # Шаг 6: Отправка результатов
@@ -1813,21 +1825,34 @@ def parse_ai_gems_response(ai_text, top_gems):
     gems = []
     blocks = ai_text.split("---АКТИВ---")
 
-    for block in blocks[1:]:  # Пропускаем первый пустой блок
+    print(f"Найдено блоков: {len(blocks)}")
+
+    for idx, block in enumerate(blocks[1:], 1):  # Пропускаем первый пустой блок
+        print(f"\nОбработка блока {idx}:")
+        print(block[:200])  # Первые 200 символов для отладки
+
         if "---КОНЕЦ---" not in block:
+            print(f"Блок {idx}: пропущен (нет маркера ---КОНЕЦ---)")
             continue
 
         try:
             gem_data = {}
-            lines = block.split("\n")
+            # Извлекаем текст между ---АКТИВ--- и ---КОНЕЦ---
+            content = block.split("---КОНЕЦ---")[0].strip()
+            lines = content.split("\n")
 
             for line in lines:
-                if ":" not in line:
+                line = line.strip()
+                if not line or ":" not in line:
                     continue
 
-                key, value = line.split(":", 1)
-                key = key.strip()
-                value = value.strip()
+                # Разделяем по первому двоеточию
+                parts = line.split(":", 1)
+                if len(parts) != 2:
+                    continue
+
+                key = parts[0].strip()
+                value = parts[1].strip()
 
                 if key == "Название":
                     gem_data["name"] = value
@@ -1838,35 +1863,68 @@ def parse_ai_gems_response(ai_text, top_gems):
                 elif key == "Драйвер":
                     gem_data["driver"] = value
                 elif key == "Текущая_цена":
-                    gem_data["price"] = float(value)
+                    try:
+                        gem_data["price"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга цены: {value}")
                 elif key == "Вход_от":
-                    gem_data["entry_from"] = float(value)
+                    try:
+                        gem_data["entry_from"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга entry_from: {value}")
                 elif key == "Вход_до":
-                    gem_data["entry_to"] = float(value)
+                    try:
+                        gem_data["entry_to"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга entry_to: {value}")
                 elif key == "Стоп":
-                    gem_data["stop"] = float(value)
+                    try:
+                        gem_data["stop"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга stop: {value}")
                 elif key == "TP1":
-                    gem_data["tp1"] = float(value)
+                    try:
+                        gem_data["tp1"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга TP1: {value}")
                 elif key == "TP2":
-                    gem_data["tp2"] = float(value)
+                    try:
+                        gem_data["tp2"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга TP2: {value}")
                 elif key == "TP3":
-                    gem_data["tp3"] = float(value)
+                    try:
+                        gem_data["tp3"] = float(value.replace(",", "."))
+                    except ValueError:
+                        print(f"Ошибка парсинга TP3: {value}")
 
             # Ищем данные монеты из исходного списка
-            for coin in top_gems:
-                if coin.get("symbol", "").upper() == gem_data.get("ticker"):
-                    gem_data["market_cap"] = coin.get("market_cap", 0) / 1_000_000
-                    gem_data["vol_mcap"] = coin.get("vol_mcap_ratio", 0) * 100
-                    gem_data["circ_ratio"] = coin.get("circ_ratio", 0) * 100 if coin.get("circ_ratio") else 0
-                    break
+            if "ticker" in gem_data:
+                for coin in top_gems:
+                    if coin.get("symbol", "").upper() == gem_data.get("ticker"):
+                        gem_data["market_cap"] = coin.get("market_cap", 0) / 1_000_000
+                        gem_data["vol_mcap"] = coin.get("vol_mcap_ratio", 0) * 100
+                        gem_data["circ_ratio"] = coin.get("circ_ratio", 0) * 100 if coin.get("circ_ratio") else 0
+                        break
 
-            if len(gem_data) >= 10:  # Проверяем что все поля заполнены
+            # Проверяем что все обязательные поля заполнены
+            required_fields = ["name", "ticker", "sector", "driver", "price", "entry_from", "entry_to", "stop", "tp1", "tp2", "tp3"]
+            missing_fields = [f for f in required_fields if f not in gem_data]
+
+            if missing_fields:
+                print(f"Блок {idx}: пропущен (отсутствуют поля: {missing_fields})")
+                print(f"Собранные данные: {gem_data}")
+            else:
+                print(f"Блок {idx}: успешно распарсен ({gem_data['ticker']})")
                 gems.append(gem_data)
 
         except Exception as e:
-            print(f"Ошибка парсинга блока: {e}")
+            print(f"Ошибка парсинга блока {idx}: {e}")
+            import traceback
+            traceback.print_exc()
             continue
 
+    print(f"\nИтого успешно распарсено: {len(gems)} активов")
     return gems
 
 def format_price(price):

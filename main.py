@@ -695,20 +695,94 @@ def get_btc_price():
         print(f"Ошибка получения цены BTC: {e}")
         return None, None
 
+def get_top_coins_prices():
+    """Получает цены топ криптовалют (BTC, ETH, SOL, BNB)"""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {
+            "ids": "bitcoin,ethereum,solana,binancecoin",
+            "vs_currencies": "usd",
+            "include_24hr_change": "true"
+        }
+        response = requests.get(url, params=params, timeout=10).json()
+        return response
+    except Exception as e:
+        print(f"Ошибка получения цен топ монет: {e}")
+        return {}
+
+def get_global_market_data():
+    """Получает глобальные рыночные данные"""
+    try:
+        url = "https://api.coingecko.com/api/v3/global"
+        response = requests.get(url, timeout=10).json()
+
+        if "data" in response:
+            data = response["data"]
+            return {
+                "total_market_cap": data.get("total_market_cap", {}).get("usd", 0),
+                "total_market_cap_change_24h": data.get("market_cap_change_percentage_24h_usd", 0),
+                "btc_dominance": data.get("market_cap_percentage", {}).get("btc", 0),
+                "eth_dominance": data.get("market_cap_percentage", {}).get("eth", 0)
+            }
+        return None
+    except Exception as e:
+        print(f"Ошибка получения глобальных данных: {e}")
+        return None
+
+def get_eth_gas_price():
+    """Получает текущую цену газа Ethereum"""
+    try:
+        # Используем Etherscan API (можно использовать без ключа для базовых запросов)
+        url = "https://api.etherscan.io/api"
+        params = {
+            "module": "gastracker",
+            "action": "gasoracle"
+        }
+        response = requests.get(url, params=params, timeout=10).json()
+
+        if response.get("status") == "1" and "result" in response:
+            gas_price = int(response["result"].get("ProposeGasPrice", 0))
+            return gas_price
+        return None
+    except Exception as e:
+        print(f"Ошибка получения ETH Gas: {e}")
+        return None
+
+def get_altcoin_season_index():
+    """Получает индекс альткоин-сезона"""
+    try:
+        # Упрощенный расчет на основе доминации BTC
+        # Альтсезон: BTC dominance < 40% = индекс высокий
+        # BTC сезон: BTC dominance > 60% = индекс низкий
+        global_data = get_global_market_data()
+        if global_data:
+            btc_dom = global_data["btc_dominance"]
+            # Формула: (70 - btc_dom) * 2 (примерно)
+            # BTC dom 40% -> индекс 60
+            # BTC dom 50% -> индекс 40
+            # BTC dom 60% -> индекс 20
+            index = max(0, min(100, (70 - btc_dom) * 2))
+            return int(index)
+        return None
+    except Exception as e:
+        print(f"Ошибка расчета Altcoin Season Index: {e}")
+        return None
+
 async def get_market_pulse_text():
-    """Формирует текст рыночного пульса"""
+    """Формирует расширенный текст рыночного пульса"""
     loop = asyncio.get_event_loop()
 
-    # Получаем индекс страха/жадности
+    # Получаем все данные параллельно
     fng_data = await loop.run_in_executor(None, get_fear_greed_index)
-
-    # Получаем цену BTC
-    btc_price, btc_change = await loop.run_in_executor(None, get_btc_price)
+    top_coins = await loop.run_in_executor(None, get_top_coins_prices)
+    global_data = await loop.run_in_executor(None, get_global_market_data)
+    eth_gas = await loop.run_in_executor(None, get_eth_gas_price)
+    alt_season = await loop.run_in_executor(None, get_altcoin_season_index)
 
     if not fng_data:
         return "🌡 <b>Рыночный пульс:</b> данные недоступны"
 
-    # Эмодзи для статуса
+    # Эмодзи для Fear & Greed
     status_emoji = {
         "Extreme Fear": "😱",
         "Fear": "😰",
@@ -719,14 +793,100 @@ async def get_market_pulse_text():
 
     emoji = status_emoji.get(fng_data["classification"], "📊")
 
-    pulse_text = (
-        f"🌡 <b>Рыночный пульс:</b>\n"
-        f"{emoji} Fear & Greed Index: <b>{fng_data['value']}/100</b> ({fng_data['classification']})\n"
-    )
+    # Начало сообщения
+    pulse_text = f"🌡 <b>РЫНОЧНЫЙ ПУЛЬС:</b>\n\n"
+    pulse_text += f"{emoji} Fear & Greed: <b>{fng_data['value']}/100</b> ({fng_data['classification']})\n\n"
 
-    if btc_price and btc_change is not None:
+    # Основные активы
+    pulse_text += "💎 <b>Основные активы:</b>\n"
+
+    if "bitcoin" in top_coins:
+        btc = top_coins["bitcoin"]
+        btc_price = btc.get("usd", 0)
+        btc_change = btc.get("usd_24h_change", 0)
         change_str = f"+{btc_change:.1f}%" if btc_change >= 0 else f"{btc_change:.1f}%"
-        pulse_text += f"₿ Bitcoin: <b>${btc_price:,.0f}</b> ({change_str} за 24ч)"
+        pulse_text += f"₿ Bitcoin: <b>${btc_price:,.0f}</b> ({change_str})\n"
+
+    if "ethereum" in top_coins:
+        eth = top_coins["ethereum"]
+        eth_price = eth.get("usd", 0)
+        eth_change = eth.get("usd_24h_change", 0)
+        change_str = f"+{eth_change:.1f}%" if eth_change >= 0 else f"{eth_change:.1f}%"
+        pulse_text += f"Ξ Ethereum: <b>${eth_price:,.2f}</b> ({change_str})\n"
+
+    if "solana" in top_coins:
+        sol = top_coins["solana"]
+        sol_price = sol.get("usd", 0)
+        sol_change = sol.get("usd_24h_change", 0)
+        change_str = f"+{sol_change:.1f}%" if sol_change >= 0 else f"{sol_change:.1f}%"
+        pulse_text += f"◎ Solana: <b>${sol_price:.2f}</b> ({change_str})\n"
+
+    if "binancecoin" in top_coins:
+        bnb = top_coins["binancecoin"]
+        bnb_price = bnb.get("usd", 0)
+        bnb_change = bnb.get("usd_24h_change", 0)
+        change_str = f"+{bnb_change:.1f}%" if bnb_change >= 0 else f"{bnb_change:.1f}%"
+        pulse_text += f"🔶 BNB: <b>${bnb_price:.2f}</b> ({change_str})\n"
+
+    # Рыночные индикаторы
+    pulse_text += "\n📊 <b>Рыночные индикаторы:</b>\n"
+
+    if global_data:
+        # BTC Dominance
+        btc_dom = global_data["btc_dominance"]
+        pulse_text += f"🔸 BTC Dominance: <b>{btc_dom:.1f}%</b>\n"
+
+        # Total Market Cap
+        total_cap = global_data["total_market_cap"]
+        cap_change = global_data["total_market_cap_change_24h"]
+        cap_trillion = total_cap / 1_000_000_000_000
+        change_str = f"+{cap_change:.1f}%" if cap_change >= 0 else f"{cap_change:.1f}%"
+        pulse_text += f"🔸 Total Market Cap: <b>${cap_trillion:.2f}T</b> ({change_str})\n"
+
+    # ETH Gas Price
+    if eth_gas is not None:
+        if eth_gas < 20:
+            gas_status = "🟢 Низкий"
+        elif eth_gas < 50:
+            gas_status = "🟡 Средний"
+        else:
+            gas_status = "🔴 Высокий"
+        pulse_text += f"🔸 ETH Gas: <b>{eth_gas} Gwei</b> ({gas_status})\n"
+
+    # Altcoin Season Index
+    if alt_season is not None:
+        if alt_season >= 75:
+            season_status = "🌊 Альтсезон!"
+        elif alt_season >= 50:
+            season_status = "📈 Альты растут"
+        elif alt_season >= 25:
+            season_status = "⚖️ Нейтрально"
+        else:
+            season_status = "₿ BTC сезон"
+        pulse_text += f"🔸 Altcoin Season Index: <b>{alt_season}/100</b> ({season_status})\n"
+
+    # Генерируем краткий сигнал
+    pulse_text += "\n📈 <b>Сигнал:</b> "
+
+    if global_data:
+        cap_change = global_data["total_market_cap_change_24h"]
+        btc_dom = global_data["btc_dominance"]
+
+        if cap_change > 3:
+            pulse_text += "Сильный рост рынка. "
+        elif cap_change > 0:
+            pulse_text += "Умеренный рост. "
+        elif cap_change > -3:
+            pulse_text += "Небольшая коррекция. "
+        else:
+            pulse_text += "Падение рынка. "
+
+        if btc_dom > 55:
+            pulse_text += "BTC доминация высокая — осторожность с альтами."
+        elif btc_dom < 40:
+            pulse_text += "Деньги идут в альткоины — возможен альтсезон!"
+        else:
+            pulse_text += "Сбалансированное распределение капитала."
 
     return pulse_text
 

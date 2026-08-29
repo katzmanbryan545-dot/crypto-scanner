@@ -888,6 +888,92 @@ async def get_market_pulse_text():
         else:
             pulse_text += "Сбалансированное распределение капитала."
 
+    # Добавляем развернутый комментарий
+    pulse_text += "\n\n💬 <b>Развернутый анализ:</b>\n"
+
+    if global_data and fng_data:
+        cap_change = global_data["total_market_cap_change_24h"]
+        btc_dom = global_data["btc_dominance"]
+        fear_value = fng_data["value"]
+
+        # Анализ тренда
+        if cap_change < -4:
+            pulse_text += "🔴 <b>Сильное падение рынка</b> (-{:.1f}%). ".format(abs(cap_change))
+            pulse_text += "Это существенная коррекция. Все топ-активы в минусе. "
+        elif cap_change < -2:
+            pulse_text += "📉 <b>Коррекция</b> (-{:.1f}%). ".format(abs(cap_change))
+            pulse_text += "Рынок корректируется после роста. "
+        elif cap_change < 0:
+            pulse_text += "⚖️ <b>Небольшое снижение</b> (-{:.1f}%). ".format(abs(cap_change))
+            pulse_text += "Легкая просадка, возможна консолидация. "
+        elif cap_change < 2:
+            pulse_text += "📊 <b>Умеренный рост</b> (+{:.1f}%). ".format(cap_change)
+            pulse_text += "Рынок растет стабильно. "
+        elif cap_change < 5:
+            pulse_text += "🚀 <b>Сильный рост</b> (+{:.1f}%). ".format(cap_change)
+            pulse_text += "Активная фаза роста! "
+        else:
+            pulse_text += "🌙 <b>Мощный памп</b> (+{:.1f}%)! ".format(cap_change)
+            pulse_text += "Экстремальный рост, возможна перекупленность. "
+
+        # Анализ доминации BTC
+        if btc_dom > 60:
+            pulse_text += "BTC доминация очень высокая ({:.1f}%) — ".format(btc_dom)
+            pulse_text += "деньги массово уходят из альтов в биткоин (защитная реакция или начало цикла). "
+            pulse_text += "<b>Не время для альтов.</b> "
+        elif btc_dom > 55:
+            pulse_text += "BTC доминация высокая ({:.1f}%) — ".format(btc_dom)
+            pulse_text += "биткоин укрепляется относительно альтов. "
+            pulse_text += "<b>Осторожность с агрессивными покупками альткоинов.</b> "
+        elif btc_dom > 45:
+            pulse_text += "BTC доминация в норме ({:.1f}%) — ".format(btc_dom)
+            pulse_text += "сбалансированное распределение капитала между BTC и альтами. "
+        elif btc_dom > 40:
+            pulse_text += "BTC доминация снижается ({:.1f}%) — ".format(btc_dom)
+            pulse_text += "деньги начинают перетекать в альткоины. "
+            pulse_text += "<b>Подготовка к альтсезону.</b> "
+        else:
+            pulse_text += "BTC доминация низкая ({:.1f}%) — ".format(btc_dom)
+            pulse_text += "полноценный альтсезон! Деньги активно идут в альткоины. "
+
+        # Парадокс Fear & Greed
+        if (fear_value > 60 and cap_change < -3) or (fear_value < 40 and cap_change > 3):
+            pulse_text += "\n⚠️ <b>Парадокс:</b> "
+            if fear_value > 60 and cap_change < -3:
+                pulse_text += "Индекс показывает жадность ({}/100), но рынок падает. ".format(fear_value)
+                pulse_text += "Люди ещё не паникуют и держат позиции. Возможно дальнейшее падение, если не развернётся."
+            else:
+                pulse_text += "Индекс показывает страх ({}/100), но рынок растёт! ".format(fear_value)
+                pulse_text += "Умные деньги входят, пока толпа боится. Хороший момент для покупок."
+
+        # Рекомендации
+        pulse_text += "\n\n🎯 <b>Рекомендации:</b>\n"
+
+        if cap_change < -3:
+            pulse_text += "• ❌ Не докупать альты — риск продолжения падения\n"
+            pulse_text += "• ✅ Держать стейблы или BTC\n"
+            pulse_text += "• ⏳ Ждать разворота: Total Market Cap должен уйти в плюс (+1-2%)"
+        elif cap_change < 0:
+            pulse_text += "• ⏸️ Коррекция — можно переждать\n"
+            pulse_text += "• 👀 Следить за Total Market Cap: разворот на +2% = сигнал к входу\n"
+            pulse_text += "• 💰 Готовить список монет для покупки"
+        elif cap_change > 3 and btc_dom < 50:
+            pulse_text += "• 🚀 Сильный рост + низкая BTC доминация = альтсезон!\n"
+            pulse_text += "• ✅ Можно докупать качественные альты\n"
+            pulse_text += "• ⚠️ Следить за перегревом (Fear & Greed > 80)"
+        else:
+            pulse_text += "• 📊 Рынок в нормальном состоянии\n"
+            pulse_text += "• ✅ Можно входить в позиции постепенно\n"
+            pulse_text += "• 📈 Проверяй /pulse 2-3 раза в день для отслеживания изменений"
+
+        # Сигналы разворота
+        if cap_change < -2:
+            pulse_text += "\n\n🔔 <b>Следи за сигналами разворота:</b>\n"
+            pulse_text += "1. Total Market Cap перейдёт в плюс (+1-2%)\n"
+            pulse_text += "2. BTC Dominance начнёт снижаться (<55%)\n"
+            if alt_season:
+                pulse_text += "3. Altcoin Season Index вырастет (>{} → >40)".format(alt_season)
+
     return pulse_text
 
 # Функция поиска причины волатильности через Tavily и OpenAI
@@ -1004,6 +1090,86 @@ async def check_volatility_alerts():
                 print(f"Ошибка отправки алерта для {coin_name}: {e}")
 
         await asyncio.sleep(1)
+
+# Кэш предыдущих значений рынка для отслеживания разворота
+market_trend_cache = {
+    "last_cap_change": None,
+    "last_btc_dom": None,
+    "last_check_time": None
+}
+
+async def check_market_trend_reversal():
+    """Проверяет разворот тренда рынка и отправляет алерты"""
+    global market_trend_cache
+    loop = asyncio.get_event_loop()
+
+    try:
+        # Получаем текущие данные рынка
+        global_data = await loop.run_in_executor(None, get_global_market_data)
+
+        if not global_data:
+            return
+
+        cap_change = global_data["total_market_cap_change_24h"]
+        btc_dom = global_data["btc_dominance"]
+        now = datetime.now()
+
+        # Пропускаем первую проверку (нужны предыдущие значения)
+        if market_trend_cache["last_cap_change"] is None:
+            market_trend_cache["last_cap_change"] = cap_change
+            market_trend_cache["last_btc_dom"] = btc_dom
+            market_trend_cache["last_check_time"] = now
+            return
+
+        last_cap_change = market_trend_cache["last_cap_change"]
+        last_btc_dom = market_trend_cache["last_btc_dom"]
+
+        # Проверяем разворот с падения на рост
+        if last_cap_change < -2 and cap_change > 1:
+            alert_text = (
+                "🔔 <b>РАЗВОРОТ ТРЕНДА!</b>\n\n"
+                f"📈 Total Market Cap развернулся:\n"
+                f"Было: <b>{last_cap_change:.1f}%</b> (падение)\n"
+                f"Стало: <b>+{cap_change:.1f}%</b> (рост)\n\n"
+                f"✅ Это может быть сигнал к входу в рынок!\n"
+                f"Проверь /pulse для полной картины."
+            )
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=alert_text, parse_mode="HTML")
+            print(f"Алерт разворота отправлен: {last_cap_change:.1f}% → {cap_change:.1f}%")
+
+        # Проверяем снижение BTC доминации (начало альтсезона)
+        if last_btc_dom > 55 and btc_dom < 53:
+            alert_text = (
+                "🌊 <b>НАЧАЛО АЛЬТСЕЗОНА?</b>\n\n"
+                f"📉 BTC Dominance снижается:\n"
+                f"Было: <b>{last_btc_dom:.1f}%</b>\n"
+                f"Стало: <b>{btc_dom:.1f}%</b>\n\n"
+                f"💰 Деньги начинают перетекать в альткоины!\n"
+                f"Проверь /pulse для деталей."
+            )
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=alert_text, parse_mode="HTML")
+            print(f"Алерт альтсезона отправлен: BTC dom {last_btc_dom:.1f}% → {btc_dom:.1f}%")
+
+        # Проверяем резкий рост BTC доминации (бегство в BTC)
+        if last_btc_dom < 55 and btc_dom > 58:
+            alert_text = (
+                "⚠️ <b>БЕГСТВО В БИТКОИН!</b>\n\n"
+                f"📈 BTC Dominance резко растет:\n"
+                f"Было: <b>{last_btc_dom:.1f}%</b>\n"
+                f"Стало: <b>{btc_dom:.1f}%</b>\n\n"
+                f"🔴 Деньги массово уходят из альтов!\n"
+                f"Осторожность с альткоинами."
+            )
+            await bot.send_message(chat_id=ADMIN_CHAT_ID, text=alert_text, parse_mode="HTML")
+            print(f"Алерт бегства в BTC отправлен: BTC dom {last_btc_dom:.1f}% → {btc_dom:.1f}%")
+
+        # Обновляем кэш
+        market_trend_cache["last_cap_change"] = cap_change
+        market_trend_cache["last_btc_dom"] = btc_dom
+        market_trend_cache["last_check_time"] = now
+
+    except Exception as e:
+        print(f"Ошибка проверки разворота тренда: {e}")
 
 # Функция быстрого просмотра портфеля (без анализа новостей)
 async def send_portfolio_view():
@@ -2013,8 +2179,11 @@ async def main():
     # Запуск проверки волатильности каждые 15 минут
     scheduler.add_job(check_volatility_alerts, "interval", minutes=15)
 
+    # Запуск проверки разворота тренда рынка каждые 30 минут
+    scheduler.add_job(check_market_trend_reversal, "interval", minutes=30)
+
     scheduler.start()
-    print("[OK] Bot zapuschen. Utrenniy didzhest: 09:00. Proverka volatilnosti: kazhdye 15 minut.")
+    print("[OK] Bot zapuschen. Utrenniy didzhest: 09:00. Proverka volatilnosti: kazhdye 15 minut. Proverka razvorota trenda: kazhdye 30 minut.")
 
     await dp.start_polling(bot)
 

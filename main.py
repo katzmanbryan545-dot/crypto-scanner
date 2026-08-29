@@ -243,6 +243,91 @@ def add_profit_record(ticker, quantity, entry_price, exit_price, profit_usd, pro
     except Exception as e:
         return False, f"❌ Ошибка записи в историю: {str(e)}"
 
+def get_realized_profit():
+    """Получает общую реализованную прибыль из листа История сделок"""
+    try:
+        worksheet = ensure_profit_history_sheet()
+        if not worksheet:
+            return 0.0
+
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:  # Только заголовок или пусто
+            return 0.0
+
+        total_profit = 0.0
+        for row in all_values[1:]:  # Пропускаем заголовок
+            if len(row) > 5 and row[5]:  # Колонка "Профит $"
+                try:
+                    profit = float(row[5])
+                    total_profit += profit
+                except ValueError:
+                    continue
+
+        return total_profit
+    except Exception as e:
+        print(f"Error getting realized profit: {e}")
+        return 0.0
+
+def get_profit_by_ticker(ticker):
+    """Получает суммарную прибыль по конкретному тикеру"""
+    try:
+        worksheet = ensure_profit_history_sheet()
+        if not worksheet:
+            return 0.0
+
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return 0.0
+
+        ticker_profit = 0.0
+        for row in all_values[1:]:
+            if len(row) > 5 and row[1].strip().upper() == ticker.upper():
+                try:
+                    profit = float(row[5])
+                    ticker_profit += profit
+                except ValueError:
+                    continue
+
+        return ticker_profit
+    except Exception as e:
+        print(f"Error getting profit for {ticker}: {e}")
+        return 0.0
+
+def calculate_unrealized_pnl(spot_positions, prices_data):
+    """Рассчитывает нереализованный PnL для всех открытых позиций"""
+    total_unrealized_usd = 0.0
+    total_invested = 0.0
+
+    for pos in spot_positions:
+        ticker = pos['ticker']
+        quantity = pos['quantity']
+        entry_price = pos['entry_price']
+
+        if entry_price <= 0 or quantity <= 0:
+            continue
+
+        # Получаем текущую цену
+        coin_id = COIN_MAP.get(ticker)
+        if not coin_id or coin_id not in prices_data:
+            continue
+
+        current_price = prices_data[coin_id].get("usd", 0)
+        if current_price <= 0:
+            continue
+
+        # Расчет прибыли/убытка
+        position_cost = entry_price * quantity
+        current_value = current_price * quantity
+        unrealized = current_value - position_cost
+
+        total_unrealized_usd += unrealized
+        total_invested += position_cost
+
+    # Рассчитываем процент
+    unrealized_pct = (total_unrealized_usd / total_invested * 100) if total_invested > 0 else 0
+
+    return total_unrealized_usd, unrealized_pct
+
 # Кэш алертов волатильности: {coin_name: last_alert_timestamp}
 volatility_alerts_cache = {}
 
@@ -949,6 +1034,7 @@ async def start_cmd(message: Message):
     # Инлайн-меню с кнопками
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Портфель", callback_data="portfolio")],
+        [InlineKeyboardButton(text="💰 Чистый профит / Статистика", callback_data="pnl")],
         [InlineKeyboardButton(text="✏️ Управление активами", callback_data="manage_assets")],
         [InlineKeyboardButton(text="📰 Дайджест дедлайнов", callback_data="digest")],
         [InlineKeyboardButton(text="🌡 Пульс рынка", callback_data="pulse")],
@@ -959,6 +1045,7 @@ async def start_cmd(message: Message):
         f"Привет! Твой крипто-терминал обновлен.\n\n"
         f"Доступные команды:\n"
         f"/portfolio - быстрый просмотр портфеля\n"
+        f"/pnl - статистика и чистый профит\n"
         f"/manage - управление активами\n"
         f"/digest - дайджест новостей и дедлайнов\n"
         f"/check - полный аудит (цены + новости)\n"
@@ -993,6 +1080,53 @@ async def pulse_cmd(message: Message):
 
     pulse_text = await get_market_pulse_text()
     await message.answer(pulse_text, parse_mode="HTML")
+
+@dp.message(Command("pnl"))
+async def pnl_cmd(message: Message):
+    """Команда для отображения чистого профита и статистики"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    if not gspread_client:
+        await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    await message.answer("📊 Рассчитываю статистику портфеля...")
+
+    loop = asyncio.get_event_loop()
+
+    # Получаем реализованную прибыль
+    realized_profit = await loop.run_in_executor(None, get_realized_profit)
+
+    # Получаем спот-позиции и актуальные цены
+    spot_positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+    prices_data = await loop.run_in_executor(None, fetch_all_prices)
+
+    # Рассчитываем нереализованный PnL
+    unrealized_usd, unrealized_pct = await loop.run_in_executor(
+        None, calculate_unrealized_pnl, spot_positions, prices_data
+    )
+
+    # Общая прибыль
+    total_profit = realized_profit + unrealized_usd
+
+    # Форматирование
+    realized_str = f"+${realized_profit:.2f}" if realized_profit >= 0 else f"-${abs(realized_profit):.2f}"
+    unrealized_str = f"+${unrealized_usd:.2f}" if unrealized_usd >= 0 else f"-${abs(unrealized_usd):.2f}"
+    unrealized_pct_str = f"+{unrealized_pct:.1f}%" if unrealized_pct >= 0 else f"{unrealized_pct:.1f}%"
+    total_str = f"+${total_profit:.2f}" if total_profit >= 0 else f"-${abs(total_profit):.2f}"
+
+    # Эмодзи в зависимости от результата
+    emoji = "🟢" if total_profit >= 0 else "🔴"
+
+    pnl_text = (
+        f"📊 <b>Сводка доходности портфеля:</b>\n\n"
+        f"💰 Реализованная чистая прибыль: <b>{realized_str}</b>\n"
+        f"📈 Плавающий PnL (открытые позиции): <b>{unrealized_str}</b> ({unrealized_pct_str})\n"
+        f"{emoji} <b>Всего заработано: {total_str}</b>"
+    )
+
+    await message.answer(pnl_text, parse_mode="HTML")
 
 @dp.message(Command("add"))
 async def add_cmd(message: Message):
@@ -1079,6 +1213,52 @@ async def handle_pulse_button(callback: CallbackQuery):
     await callback.answer()
     pulse_text = await get_market_pulse_text()
     await callback.message.answer(pulse_text, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "pnl")
+async def handle_pnl_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Чистый профит / Статистика'"""
+    await callback.answer()
+
+    if not gspread_client:
+        await callback.message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    await callback.message.answer("📊 Рассчитываю статистику портфеля...")
+
+    loop = asyncio.get_event_loop()
+
+    # Получаем реализованную прибыль
+    realized_profit = await loop.run_in_executor(None, get_realized_profit)
+
+    # Получаем спот-позиции и актуальные цены
+    spot_positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+    prices_data = await loop.run_in_executor(None, fetch_all_prices)
+
+    # Рассчитываем нереализованный PnL
+    unrealized_usd, unrealized_pct = await loop.run_in_executor(
+        None, calculate_unrealized_pnl, spot_positions, prices_data
+    )
+
+    # Общая прибыль
+    total_profit = realized_profit + unrealized_usd
+
+    # Форматирование
+    realized_str = f"+${realized_profit:.2f}" if realized_profit >= 0 else f"-${abs(realized_profit):.2f}"
+    unrealized_str = f"+${unrealized_usd:.2f}" if unrealized_usd >= 0 else f"-${abs(unrealized_usd):.2f}"
+    unrealized_pct_str = f"+{unrealized_pct:.1f}%" if unrealized_pct >= 0 else f"{unrealized_pct:.1f}%"
+    total_str = f"+${total_profit:.2f}" if total_profit >= 0 else f"-${abs(total_profit):.2f}"
+
+    # Эмодзи в зависимости от результата
+    emoji = "🟢" if total_profit >= 0 else "🔴"
+
+    pnl_text = (
+        f"📊 <b>Сводка доходности портфеля:</b>\n\n"
+        f"💰 Реализованная чистая прибыль: <b>{realized_str}</b>\n"
+        f"📈 Плавающий PnL (открытые позиции): <b>{unrealized_str}</b> ({unrealized_pct_str})\n"
+        f"{emoji} <b>Всего заработано: {total_str}</b>"
+    )
+
+    await callback.message.answer(pnl_text, parse_mode="HTML")
 
 @dp.callback_query(lambda c: c.data == "add_asset")
 async def handle_add_asset_button(callback: CallbackQuery):
@@ -1197,13 +1377,18 @@ async def handle_manage_position(callback: CallbackQuery, state: FSMContext):
     entry_fmt = f"{entry_price:.6f}" if entry_price < 0.01 else f"{entry_price:.4f}"
     tp_fmt = f"{take_profit:.6f}" if take_profit < 0.01 else f"{take_profit:.2f}"
 
+    # Получаем зафиксированный профит по этой монете
+    ticker_profit = await loop.run_in_executor(None, get_profit_by_ticker, ticker)
+    ticker_profit_str = f"+${ticker_profit:.2f}" if ticker_profit >= 0 else f"-${abs(ticker_profit):.2f}"
+
     card_text = (
         f"💼 <b>{ticker}</b>\n\n"
         f"📊 Количество: <b>{quantity}</b>\n"
         f"💵 Цена входа: <b>${entry_fmt}</b>\n"
         f"💰 Текущая цена: <b>${price_fmt}</b>\n"
         f"🎯 Цель (Тейк): <b>${tp_fmt}</b>\n"
-        f"📈 PnL: <b>{pnl:+.1f}%</b>"
+        f"📈 PnL: <b>{pnl:+.1f}%</b>\n"
+        f"💎 Зафиксировано по этой монете: <b>{ticker_profit_str}</b>"
     )
 
     # Сохраняем данные в state для последующих операций

@@ -41,17 +41,15 @@ volatility_alerts_cache = {}
 
 # Маппинг популярных тикеров в CoinGecko coin_id
 COIN_MAP = {
-    "ARB": "arbitrum",
-    "OP": "optimism",
+    "ARB": "arbitrum", "ARBITRUM": "arbitrum",
+    "OP": "optimism", "OPTIMISM": "optimism",
     "ATOM": "cosmos",
     "TIA": "celestia",
     "DYM": "dymension",
     "APT": "aptos",
     "BONK": "bonk",
     "APEX": "apex-token",
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "SOL": "solana",
+    "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
     "AVAX": "avalanche-2",
     "MATIC": "matic-network",
     "DOT": "polkadot",
@@ -76,6 +74,25 @@ COIN_MAP = {
     "BNB": "binancecoin",
     "DOGE": "dogecoin"
 }
+
+# Функция получения всех цен одним запросом
+def fetch_all_prices():
+    """Получает цены для всех монет из COIN_MAP одним запросом"""
+    ids_str = ",".join(set(COIN_MAP.values()))
+    url = "https://api.coingecko.com/api/v3/simple/price"
+    params = {
+        "ids": ids_str,
+        "vs_currencies": "usd",
+        "include_24hr_change": "true"
+    }
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, params=params, headers=headers, timeout=10)
+        res.raise_for_status()
+        return res.json()
+    except Exception as e:
+        print(f"CoinGecko Error: {e}")
+        return {}
 
 # Функция чтения спот-портфеля из Google Таблицы (лист Spot)
 def get_spot_portfolio():
@@ -491,73 +508,52 @@ async def send_portfolio_view():
 
     # --- СЕКЦИЯ 1: СПОТ-ПОРТФЕЛЬ ---
     if spot_data:
-        # Собираем coin_id для пакетного запроса
-        coin_ids = []
-        ticker_to_id = {}
-
-        for spot in spot_data:
-            ticker = spot["ticker"]
-            coin_id = COIN_MAP.get(ticker, ticker.lower())
-            coin_ids.append(coin_id)
-            ticker_to_id[ticker] = coin_id
-
-        # Делаем пакетный запрос цен
-        prices_data = await loop.run_in_executor(None, get_batch_crypto_prices, coin_ids)
+        # Получаем все цены одним запросом
+        prices_data = await loop.run_in_executor(None, fetch_all_prices)
 
         spot_text = "💼 <b>СПОТ-ПОРТФЕЛЬ & ЦЕЛЕВЫЕ ЦЕНЫ:</b>\n\n"
 
         for spot in spot_data:
-            ticker = spot["ticker"]
-            entry_price = spot["entry_price"]
-            take_profit = spot["take_profit"]
-            coin_id = ticker_to_id.get(ticker)
+            ticker = spot["ticker"].upper()
+            entry_price = spot["entry_price"] if spot["entry_price"] else 0
+            tp_price = spot["take_profit"] if spot["take_profit"] else 0
+
+            # Получаем coin_id из маппинга
+            coin_id = COIN_MAP.get(ticker)
 
             # Проверяем, есть ли данные по этой монете
             if coin_id and coin_id in prices_data:
                 coin_data = prices_data[coin_id]
-                curr_price = coin_data.get("usd")
+                current_price = coin_data.get("usd")
 
-                if curr_price and curr_price > 0:
-                    # Определяем количество знаков для цены
-                    if curr_price < 0.01:
-                        price_format = f"${curr_price:.6f}"
-                    else:
-                        price_format = f"${curr_price:.4f}"
+                if current_price and current_price > 0:
+                    # Расчет PnL
+                    pnl = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                    emoji = "🟢" if pnl >= 0 else "🔴"
 
-                    # Расчет PnL и эмодзи
-                    if entry_price and entry_price > 0:
-                        pnl = ((curr_price - entry_price) / entry_price) * 100
-                        emoji = "🟢" if pnl >= 0 else "🔴"
+                    # Расчет расстояния до тейка
+                    tp_gain = None
+                    if tp_price > 0 and current_price > 0:
+                        tp_gain = ((tp_price - current_price) / current_price) * 100
 
-                        # Форматирование entry_price
-                        if entry_price < 0.01:
-                            entry_format = f"${entry_price:.6f}"
-                        else:
-                            entry_format = f"${entry_price:.4f}"
+                    # Форматирование цен
+                    price_fmt = f"{current_price:.6f}" if current_price < 0.01 else f"{current_price:.4f}"
+                    entry_fmt = f"{entry_price:.6f}" if entry_price < 0.01 else f"{entry_price:.4f}"
+                    tp_fmt = f"{tp_price:.6f}" if tp_price < 0.01 else f"{tp_price:.2f}"
 
-                        # Базовая строка с ценой и PnL
-                        spot_text += (
-                            f"{emoji} <b>{ticker}</b>: {price_format} "
-                            f"(Вход: {entry_format}"
-                        )
+                    # Строка расстояния до тейка
+                    tp_str = f"+{tp_gain:.1f}%" if tp_gain is not None else "N/A"
 
-                        # Добавляем тейк-профит если есть
-                        if take_profit and take_profit > 0:
-                            spot_text += f" | Тейк: ${take_profit:.2f}"
-
-                        spot_text += f" | PnL: {pnl:+.1f}%)\n"
-
-                        # Расстояние до тейк-профита
-                        if take_profit and take_profit > 0:
-                            tp_gain = ((take_profit - curr_price) / curr_price) * 100
-                            spot_text += f"   🎯 До тейка: {tp_gain:+.1f}%\n"
-                        else:
-                            spot_text += f"   🎯 До тейка: N/A\n"
-                    else:
-                        # Нет цены входа
-                        spot_text += f"• <b>{ticker}</b>: {price_format} (Без точки входа)\n"
+                    # Формируем строку
+                    line = (
+                        f"{emoji} <b>{ticker}</b>: ${price_fmt} (Вход: ${entry_fmt} | Тейк: ${tp_fmt} | PnL: {pnl:+.1f}%)\n"
+                        f"   🎯 До тейка: {tp_str}\n"
+                    )
+                    spot_text += line
+                else:
+                    spot_text += f"• <b>{ticker}</b>: Цена недоступна\n"
             else:
-                spot_text += f"• <b>{ticker}</b>: Цена недоступна\n"
+                spot_text += f"• <b>{ticker}</b>: Не найден в CoinGecko\n"
 
         try:
             await bot.send_message(chat_id=ADMIN_CHAT_ID, text=spot_text, parse_mode="HTML")
@@ -567,7 +563,7 @@ async def send_portfolio_view():
 
     # --- СЕКЦИЯ 2: РАДАР АКТИВНОСТЕЙ & СТЕЙКИНГА ---
     if airdrops_data:
-        activities_text = "⏳ <b>РАДАР АКТИВНОСТЕЙ:</b>\n\n"
+        activities_text = "⏳ <b>РАДАР АКТИВНОСТЕЙ & СТЕЙКИНГА:</b>\n\n"
 
         for activity in airdrops_data:
             project = activity["project"]

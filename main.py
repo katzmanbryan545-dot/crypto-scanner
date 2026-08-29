@@ -27,6 +27,14 @@ class AddSpotState(StatesGroup):
 class AddAirdropState(StatesGroup):
     waiting_for_airdrop_data = State()
 
+# --- FSM СОСТОЯНИЯ ДЛЯ УПРАВЛЕНИЯ ПОЗИЦИЯМИ ---
+class ManagePositionState(StatesGroup):
+    waiting_for_buy_amount = State()
+    waiting_for_buy_price = State()
+    waiting_for_sell_amount = State()
+    waiting_for_sell_price = State()
+    waiting_for_new_target = State()
+
 # --- НАСТРОЙКА КЛЮЧЕЙ И ТАБЛИЦЫ ЧЕРЕЗ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
@@ -108,6 +116,132 @@ def add_airdrop_to_sheet(project, activity_type, status, deadline):
         return True, f"✅ Добавлено: {project} [{activity_type}] - {status}"
     except Exception as e:
         return False, f"❌ Ошибка добавления в Google Sheets: {str(e)}"
+
+def get_spot_positions_with_rows():
+    """Получает список всех позиций из Spot листа с номерами строк"""
+    try:
+        if not gspread_client:
+            return []
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+        worksheet = spreadsheet.get_worksheet(0)  # Spot лист
+        all_values = worksheet.get_all_values()
+
+        positions = []
+        for idx, row in enumerate(all_values[1:], start=2):  # Пропускаем заголовок
+            if len(row) > 0 and row[0].strip():
+                ticker = row[0].strip().upper()
+                quantity = float(row[1]) if len(row) > 1 and row[1] else 0
+                entry_price = float(row[2]) if len(row) > 2 and row[2] else 0
+                take_profit = float(row[3]) if len(row) > 3 and row[3] else 0
+
+                positions.append({
+                    "row": idx,
+                    "ticker": ticker,
+                    "quantity": quantity,
+                    "entry_price": entry_price,
+                    "take_profit": take_profit
+                })
+
+        return positions
+    except Exception as e:
+        print(f"Error getting spot positions: {e}")
+        return []
+
+def update_position_buy(ticker, row_num, new_quantity, new_avg_price):
+    """Обновляет позицию после докупки"""
+    try:
+        if not gspread_client:
+            return False, "Google Sheets API не настроен"
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+        worksheet = spreadsheet.get_worksheet(0)
+
+        worksheet.update_cell(row_num, 2, new_quantity)  # Колонка B - количество
+        worksheet.update_cell(row_num, 3, new_avg_price)  # Колонка C - средняя цена
+
+        return True, f"✅ Обновлено: {ticker} - новое кол-во {new_quantity}, средняя цена ${new_avg_price:.6f}"
+    except Exception as e:
+        return False, f"❌ Ошибка обновления: {str(e)}"
+
+def update_position_sell(ticker, row_num, new_quantity):
+    """Обновляет позицию после продажи"""
+    try:
+        if not gspread_client:
+            return False, "Google Sheets API не настроен"
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+        worksheet = spreadsheet.get_worksheet(0)
+
+        if new_quantity <= 0:
+            # Удаляем строку, если позиция полностью закрыта
+            worksheet.delete_rows(row_num)
+            return True, f"✅ Позиция {ticker} полностью закрыта и удалена"
+        else:
+            worksheet.update_cell(row_num, 2, new_quantity)
+            return True, f"✅ Обновлено: {ticker} - осталось {new_quantity}"
+    except Exception as e:
+        return False, f"❌ Ошибка обновления: {str(e)}"
+
+def update_take_profit(ticker, row_num, new_target):
+    """Обновляет цель (тейк-профит)"""
+    try:
+        if not gspread_client:
+            return False, "Google Sheets API не настроен"
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+        worksheet = spreadsheet.get_worksheet(0)
+
+        worksheet.update_cell(row_num, 4, new_target)  # Колонка D - тейк
+
+        return True, f"✅ Цель обновлена: {ticker} -> ${new_target}"
+    except Exception as e:
+        return False, f"❌ Ошибка обновления: {str(e)}"
+
+def ensure_profit_history_sheet():
+    """Проверяет наличие листа История сделок, создает если нет"""
+    try:
+        if not gspread_client:
+            return None
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+
+        # Ищем лист "История сделок"
+        for ws in spreadsheet.worksheets():
+            if ws.title.lower() in ["история сделок", "profit history", "история"]:
+                return ws
+
+        # Создаем новый лист
+        worksheet = spreadsheet.add_worksheet(title="История сделок", rows=100, cols=7)
+        # Добавляем заголовки
+        worksheet.append_row(["Дата", "Тикер", "Количество", "Вход $", "Выход $", "Профит $", "Профит %"])
+        return worksheet
+
+    except Exception as e:
+        print(f"Error ensuring profit history sheet: {e}")
+        return None
+
+def add_profit_record(ticker, quantity, entry_price, exit_price, profit_usd, profit_pct):
+    """Добавляет запись о зафиксированном профите"""
+    try:
+        worksheet = ensure_profit_history_sheet()
+        if not worksheet:
+            return False, "Не удалось создать/найти лист История сделок"
+
+        date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+        worksheet.append_row([
+            date_str,
+            ticker,
+            quantity,
+            entry_price,
+            exit_price,
+            profit_usd,
+            profit_pct
+        ])
+
+        return True, f"✅ Записано в историю: {ticker} | Профит: ${profit_usd:.2f} ({profit_pct:+.1f}%)"
+    except Exception as e:
+        return False, f"❌ Ошибка записи в историю: {str(e)}"
 
 # Кэш алертов волатильности: {coin_name: last_alert_timestamp}
 volatility_alerts_cache = {}
@@ -815,6 +949,7 @@ async def start_cmd(message: Message):
     # Инлайн-меню с кнопками
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Портфель", callback_data="portfolio")],
+        [InlineKeyboardButton(text="✏️ Управление активами", callback_data="manage_assets")],
         [InlineKeyboardButton(text="📰 Дайджест дедлайнов", callback_data="digest")],
         [InlineKeyboardButton(text="🌡 Пульс рынка", callback_data="pulse")],
         [InlineKeyboardButton(text="➕ Добавить актив", callback_data="add_asset")]
@@ -824,6 +959,7 @@ async def start_cmd(message: Message):
         f"Привет! Твой крипто-терминал обновлен.\n\n"
         f"Доступные команды:\n"
         f"/portfolio - быстрый просмотр портфеля\n"
+        f"/manage - управление активами\n"
         f"/digest - дайджест новостей и дедлайнов\n"
         f"/check - полный аудит (цены + новости)\n"
         f"/pulse - проверить рыночный пульс\n"
@@ -874,6 +1010,36 @@ async def add_cmd(message: Message):
     ])
 
     await message.answer("➕ Выберите, куда добавить актив:", reply_markup=keyboard)
+
+@dp.message(Command("manage"))
+async def manage_cmd(message: Message):
+    """Команда для управления активами"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    if not gspread_client:
+        await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    loop = asyncio.get_event_loop()
+    positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+
+    if not positions:
+        await message.answer("📊 Спот-портфель пуст. Добавьте активы через /add")
+        return
+
+    # Формируем инлайн-кнопки для каждой монеты
+    keyboard_buttons = []
+    for pos in positions:
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text=f"{pos['ticker']} ({pos['quantity']} шт.)",
+                callback_data=f"manage_{pos['ticker']}_{pos['row']}"
+            )
+        ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await message.answer("✏️ <b>Выберите актив для управления:</b>", reply_markup=keyboard, parse_mode="HTML")
 
 # --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
 @dp.callback_query(lambda c: c.data and c.data.startswith("why_"))
@@ -958,6 +1124,162 @@ async def handle_add_airdrop(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AddAirdropState.waiting_for_airdrop_data)
 
+@dp.callback_query(lambda c: c.data == "manage_assets")
+async def handle_manage_assets_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Управление активами'"""
+    await callback.answer()
+
+    if not gspread_client:
+        await callback.message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    loop = asyncio.get_event_loop()
+    positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+
+    if not positions:
+        await callback.message.answer("📊 Спот-портфель пуст. Добавьте активы через /add")
+        return
+
+    # Формируем инлайн-кнопки для каждой монеты
+    keyboard_buttons = []
+    for pos in positions:
+        keyboard_buttons.append([
+            InlineKeyboardButton(
+                text=f"{pos['ticker']} ({pos['quantity']} шт.)",
+                callback_data=f"manage_{pos['ticker']}_{pos['row']}"
+            )
+        ])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_buttons)
+    await callback.message.answer("✏️ <b>Выберите актив для управления:</b>", reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("manage_"))
+async def handle_manage_position(callback: CallbackQuery, state: FSMContext):
+    """Обработчик выбора позиции для управления"""
+    await callback.answer()
+
+    # Парсим callback_data: manage_TICKER_ROW
+    parts = callback.data.split("_")
+    if len(parts) < 3:
+        await callback.message.answer("❌ Ошибка данных")
+        return
+
+    ticker = parts[1]
+    row_num = int(parts[2])
+
+    # Получаем позиции и находим нужную
+    loop = asyncio.get_event_loop()
+    positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+    position = next((p for p in positions if p['ticker'] == ticker and p['row'] == row_num), None)
+
+    if not position:
+        await callback.message.answer("❌ Позиция не найдена")
+        return
+
+    # Получаем текущую цену
+    prices_data = await loop.run_in_executor(None, fetch_all_prices)
+    coin_id = COIN_MAP.get(ticker)
+    current_price = 0
+
+    if coin_id and coin_id in prices_data:
+        current_price = prices_data[coin_id].get("usd", 0)
+
+    # Формируем карточку актива
+    entry_price = position['entry_price']
+    quantity = position['quantity']
+    take_profit = position['take_profit']
+
+    pnl = 0
+    if entry_price > 0 and current_price > 0:
+        pnl = ((current_price - entry_price) / entry_price) * 100
+
+    price_fmt = f"{current_price:.6f}" if current_price < 0.01 else f"{current_price:.4f}"
+    entry_fmt = f"{entry_price:.6f}" if entry_price < 0.01 else f"{entry_price:.4f}"
+    tp_fmt = f"{take_profit:.6f}" if take_profit < 0.01 else f"{take_profit:.2f}"
+
+    card_text = (
+        f"💼 <b>{ticker}</b>\n\n"
+        f"📊 Количество: <b>{quantity}</b>\n"
+        f"💵 Цена входа: <b>${entry_fmt}</b>\n"
+        f"💰 Текущая цена: <b>${price_fmt}</b>\n"
+        f"🎯 Цель (Тейк): <b>${tp_fmt}</b>\n"
+        f"📈 PnL: <b>{pnl:+.1f}%</b>"
+    )
+
+    # Сохраняем данные в state для последующих операций
+    await state.update_data(ticker=ticker, row_num=row_num, position=position)
+
+    # Кнопки управления
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Докупить", callback_data=f"buy_{ticker}_{row_num}")],
+        [InlineKeyboardButton(text="💰 Зафиксировать прибыль", callback_data=f"sell_{ticker}_{row_num}")],
+        [InlineKeyboardButton(text="🎯 Изменить цель (Тейк)", callback_data=f"target_{ticker}_{row_num}")]
+    ])
+
+    await callback.message.answer(card_text, reply_markup=keyboard, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("buy_"))
+async def handle_buy_position(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Докупить'"""
+    await callback.answer()
+
+    parts = callback.data.split("_")
+    ticker = parts[1]
+    row_num = int(parts[2])
+
+    await state.update_data(ticker=ticker, row_num=row_num, action="buy")
+
+    await callback.message.answer(
+        f"➕ <b>Докупка {ticker}</b>\n\n"
+        f"Введите данные в формате:\n"
+        f"<code>КОЛИЧЕСТВО ЦЕНА</code>\n\n"
+        f"Пример: <code>50 5.2</code>\n\n"
+        f"Отправьте /cancel для отмены.",
+        parse_mode="HTML"
+    )
+    await state.set_state(ManagePositionState.waiting_for_buy_amount)
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("sell_"))
+async def handle_sell_position(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Зафиксировать прибыль'"""
+    await callback.answer()
+
+    parts = callback.data.split("_")
+    ticker = parts[1]
+    row_num = int(parts[2])
+
+    await state.update_data(ticker=ticker, row_num=row_num, action="sell")
+
+    await callback.message.answer(
+        f"💰 <b>Фиксация профита {ticker}</b>\n\n"
+        f"Введите данные в формате:\n"
+        f"<code>КОЛИЧЕСТВО ЦЕНА_ПРОДАЖИ</code>\n\n"
+        f"Пример: <code>30 8.5</code>\n\n"
+        f"Отправьте /cancel для отмены.",
+        parse_mode="HTML"
+    )
+    await state.set_state(ManagePositionState.waiting_for_sell_amount)
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("target_"))
+async def handle_change_target(callback: CallbackQuery, state: FSMContext):
+    """Обработчик кнопки 'Изменить цель'"""
+    await callback.answer()
+
+    parts = callback.data.split("_")
+    ticker = parts[1]
+    row_num = int(parts[2])
+
+    await state.update_data(ticker=ticker, row_num=row_num, action="target")
+
+    await callback.message.answer(
+        f"🎯 <b>Изменение цели {ticker}</b>\n\n"
+        f"Введите новую целевую цену:\n\n"
+        f"Пример: <code>15.0</code>\n\n"
+        f"Отправьте /cancel для отмены.",
+        parse_mode="HTML"
+    )
+    await state.set_state(ManagePositionState.waiting_for_new_target)
+
 # --- ОБРАБОТЧИКИ FSM СОСТОЯНИЙ ---
 @dp.message(Command("cancel"))
 async def cancel_handler(message: Message, state: FSMContext):
@@ -1029,6 +1351,162 @@ async def process_airdrop_data(message: Message, state: FSMContext):
         if success:
             await state.clear()
 
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.message(ManagePositionState.waiting_for_buy_amount)
+async def process_buy_data(message: Message, state: FSMContext):
+    """Обработка докупки"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        data = await state.get_data()
+        ticker = data.get("ticker")
+        row_num = data.get("row_num")
+
+        # Парсим: КОЛИЧЕСТВО ЦЕНА
+        parts = message.text.strip().split()
+        if len(parts) != 2:
+            await message.answer("❌ Неверный формат. Используйте: КОЛИЧЕСТВО ЦЕНА\nПример: 50 5.2")
+            return
+
+        buy_quantity = float(parts[0])
+        buy_price = float(parts[1])
+
+        # Получаем текущую позицию
+        loop = asyncio.get_event_loop()
+        positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+        position = next((p for p in positions if p['ticker'] == ticker and p['row'] == row_num), None)
+
+        if not position:
+            await message.answer("❌ Позиция не найдена")
+            await state.clear()
+            return
+
+        # Рассчитываем новую среднюю цену
+        old_quantity = position['quantity']
+        old_price = position['entry_price']
+
+        new_quantity = old_quantity + buy_quantity
+        new_avg_price = ((old_quantity * old_price) + (buy_quantity * buy_price)) / new_quantity
+
+        # Обновляем в таблице
+        success, result_msg = await loop.run_in_executor(
+            None, update_position_buy, ticker, row_num, new_quantity, new_avg_price
+        )
+
+        await message.answer(result_msg, parse_mode="HTML")
+
+        if success:
+            await state.clear()
+
+    except ValueError:
+        await message.answer("❌ Ошибка: количество и цена должны быть числами")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.message(ManagePositionState.waiting_for_sell_amount)
+async def process_sell_data(message: Message, state: FSMContext):
+    """Обработка фиксации профита"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        data = await state.get_data()
+        ticker = data.get("ticker")
+        row_num = data.get("row_num")
+
+        # Парсим: КОЛИЧЕСТВО ЦЕНА_ПРОДАЖИ
+        parts = message.text.strip().split()
+        if len(parts) != 2:
+            await message.answer("❌ Неверный формат. Используйте: КОЛИЧЕСТВО ЦЕНА_ПРОДАЖИ\nПример: 30 8.5")
+            return
+
+        sell_quantity = float(parts[0])
+        sell_price = float(parts[1])
+
+        # Получаем текущую позицию
+        loop = asyncio.get_event_loop()
+        positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+        position = next((p for p in positions if p['ticker'] == ticker and p['row'] == row_num), None)
+
+        if not position:
+            await message.answer("❌ Позиция не найдена")
+            await state.clear()
+            return
+
+        old_quantity = position['quantity']
+        entry_price = position['entry_price']
+
+        if sell_quantity > old_quantity:
+            await message.answer(f"❌ Недостаточно монет. Доступно: {old_quantity}")
+            return
+
+        # Рассчитываем профит
+        profit_usd = (sell_price - entry_price) * sell_quantity
+        profit_pct = ((sell_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+
+        # Обновляем количество в таблице
+        new_quantity = old_quantity - sell_quantity
+        success, result_msg = await loop.run_in_executor(
+            None, update_position_sell, ticker, row_num, new_quantity
+        )
+
+        if not success:
+            await message.answer(result_msg)
+            return
+
+        # Добавляем запись в историю
+        success_history, history_msg = await loop.run_in_executor(
+            None, add_profit_record, ticker, sell_quantity, entry_price, sell_price, profit_usd, profit_pct
+        )
+
+        result_text = (
+            f"✅ <b>Профит зафиксирован!</b>\n\n"
+            f"💼 {ticker}\n"
+            f"📊 Продано: {sell_quantity}\n"
+            f"💵 Цена входа: ${entry_price:.4f}\n"
+            f"💰 Цена продажи: ${sell_price:.4f}\n"
+            f"💎 Чистый профит: <b>${profit_usd:.2f}</b> ({profit_pct:+.1f}%)\n\n"
+            f"{result_msg}\n"
+            f"{history_msg if success_history else '⚠️ ' + history_msg}"
+        )
+
+        await message.answer(result_text, parse_mode="HTML")
+        await state.clear()
+
+    except ValueError:
+        await message.answer("❌ Ошибка: количество и цена должны быть числами")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.message(ManagePositionState.waiting_for_new_target)
+async def process_target_change(message: Message, state: FSMContext):
+    """Обработка изменения цели"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        data = await state.get_data()
+        ticker = data.get("ticker")
+        row_num = data.get("row_num")
+
+        new_target = float(message.text.strip())
+
+        # Обновляем в таблице
+        loop = asyncio.get_event_loop()
+        success, result_msg = await loop.run_in_executor(
+            None, update_take_profit, ticker, row_num, new_target
+        )
+
+        await message.answer(result_msg, parse_mode="HTML")
+
+        if success:
+            await state.clear()
+
+    except ValueError:
+        await message.answer("❌ Ошибка: введите число")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
 

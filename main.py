@@ -1716,11 +1716,15 @@ async def gems_cmd(message: Message):
             gem_text = format_gem_message(idx, gem)
 
             # Кнопки под каждой карточкой
+            # Используем текущую цену вместо entry_from для упрощения callback_data
+            price_str = str(gem.get('price', 0))
+            tp_str = str(gem.get('tp2', 0))
+
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
                     InlineKeyboardButton(
                         text="➕ Добавить в портфель",
-                        callback_data=f"addgem_{gem['ticker']}_{gem['entry_from']:.6f}_{gem['tp2']:.6f}"
+                        callback_data=f"addgem_{gem['ticker']}_{price_str}_{tp_str}"
                     )
                 ],
                 [

@@ -960,7 +960,7 @@ async def get_market_pulse_text():
         elif cap_change > 3 and btc_dom < 50:
             pulse_text += "• 🚀 Сильный рост + низкая BTC доминация = альтсезон!\n"
             pulse_text += "• ✅ Можно докупать качественные альты\n"
-            pulse_text += "• ⚠️ Следить за перегревом (Fear & Greed > 80)"
+            pulse_text += "• ⚠️ Следить за перегревом (Fear &amp; Greed больше 80)"
         else:
             pulse_text += "• 📊 Рынок в нормальном состоянии\n"
             pulse_text += "• ✅ Можно входить в позиции постепенно\n"
@@ -970,9 +970,9 @@ async def get_market_pulse_text():
         if cap_change < -2:
             pulse_text += "\n\n🔔 <b>Следи за сигналами разворота:</b>\n"
             pulse_text += "1. Total Market Cap перейдёт в плюс (+1-2%)\n"
-            pulse_text += "2. BTC Dominance начнёт снижаться (<55%)\n"
+            pulse_text += "2. BTC Dominance начнёт снижаться (меньше 55%)\n"
             if alt_season:
-                pulse_text += "3. Altcoin Season Index вырастет (>{} → >40)".format(alt_season)
+                pulse_text += "3. Altcoin Season Index вырастет (больше {} → больше 40)".format(alt_season)
 
     return pulse_text
 

@@ -4,16 +4,28 @@ import asyncio
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 from openai import OpenAI
 from tavily import TavilyClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
+
+# --- FSM СОСТОЯНИЯ ДЛЯ ДОБАВЛЕНИЯ АКТИВОВ ---
+class AddSpotState(StatesGroup):
+    waiting_for_spot_data = State()
+
+class AddAirdropState(StatesGroup):
+    waiting_for_airdrop_data = State()
 
 # --- НАСТРОЙКА КЛЮЧЕЙ И ТАБЛИЦЫ ЧЕРЕЗ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -27,14 +39,75 @@ if not all([TELEGRAM_TOKEN, OPENROUTER_API_KEY, TAVILY_API_KEY, GOOGLE_SHEETS_ID
 
 ADMIN_CHAT_ID = int(MY_TELEGRAM_ID)
 bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher()
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 scheduler = AsyncIOScheduler()
+
+# --- НАСТРОЙКА GOOGLE SHEETS API ---
+def init_gspread():
+    """Инициализация gspread клиента"""
+    try:
+        # Проверяем наличие credentials.json
+        if os.path.exists("credentials.json"):
+            scope = ['https://spreadsheets.google.com/feeds',
+                     'https://www.googleapis.com/auth/drive']
+            creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
+            client = gspread.authorize(creds)
+            return client
+        else:
+            print("WARNING: credentials.json not found. Add asset function will be unavailable.")
+            return None
+    except Exception as e:
+        print(f"WARNING: Error initializing gspread: {e}")
+        return None
+
+gspread_client = init_gspread()
 
 # Инициализация OpenRouter клиента
 openai_client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
 )
+
+# --- ФУНКЦИИ РАБОТЫ С GOOGLE SHEETS ---
+def add_spot_to_sheet(ticker, quantity, entry_price, take_profit):
+    """Добавляет новую позицию в лист Spot"""
+    try:
+        if not gspread_client:
+            return False, "Google Sheets API не настроен (отсутствует credentials.json)"
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+        worksheet = spreadsheet.get_worksheet(0)  # Первый лист (Spot)
+
+        # Добавляем новую строку
+        worksheet.append_row([ticker.upper(), quantity, entry_price, take_profit, ""])
+        return True, f"✅ Добавлено: {ticker.upper()} (Вход: ${entry_price}, Тейк: ${take_profit})"
+    except Exception as e:
+        return False, f"❌ Ошибка добавления в Google Sheets: {str(e)}"
+
+def add_airdrop_to_sheet(project, activity_type, status, deadline):
+    """Добавляет новую активность в лист Airdrops"""
+    try:
+        if not gspread_client:
+            return False, "Google Sheets API не настроен (отсутствует credentials.json)"
+
+        spreadsheet = gspread_client.open_by_key(GOOGLE_SHEETS_ID)
+        # Получаем лист по gid (878500138)
+        worksheet = None
+        for ws in spreadsheet.worksheets():
+            if ws.id == 878500138:
+                worksheet = ws
+                break
+
+        if not worksheet:
+            # Если не нашли по ID, пробуем второй лист
+            worksheet = spreadsheet.get_worksheet(1)
+
+        # Добавляем новую строку
+        worksheet.append_row([project, activity_type, deadline, status])
+        return True, f"✅ Добавлено: {project} [{activity_type}] - {status}"
+    except Exception as e:
+        return False, f"❌ Ошибка добавления в Google Sheets: {str(e)}"
 
 # Кэш алертов волатильности: {coin_name: last_alert_timestamp}
 volatility_alerts_cache = {}
@@ -743,7 +816,8 @@ async def start_cmd(message: Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Портфель", callback_data="portfolio")],
         [InlineKeyboardButton(text="📰 Дайджест дедлайнов", callback_data="digest")],
-        [InlineKeyboardButton(text="🌡 Пульс рынка", callback_data="pulse")]
+        [InlineKeyboardButton(text="🌡 Пульс рынка", callback_data="pulse")],
+        [InlineKeyboardButton(text="➕ Добавить актив", callback_data="add_asset")]
     ])
 
     await message.answer(
@@ -752,7 +826,8 @@ async def start_cmd(message: Message):
         f"/portfolio - быстрый просмотр портфеля\n"
         f"/digest - дайджест новостей и дедлайнов\n"
         f"/check - полный аудит (цены + новости)\n"
-        f"/pulse - проверить рыночный пульс\n\n"
+        f"/pulse - проверить рыночный пульс\n"
+        f"/add - добавить актив в таблицу\n\n"
         f"Или используй кнопки ниже:",
         reply_markup=keyboard
     )
@@ -782,6 +857,23 @@ async def pulse_cmd(message: Message):
 
     pulse_text = await get_market_pulse_text()
     await message.answer(pulse_text, parse_mode="HTML")
+
+@dp.message(Command("add"))
+async def add_cmd(message: Message):
+    """Команда для добавления актива"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    if not gspread_client:
+        await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💼 В Спот-портфель", callback_data="add_spot")],
+        [InlineKeyboardButton(text="🪂 В Радар активностей", callback_data="add_airdrop")]
+    ])
+
+    await message.answer("➕ Выберите, куда добавить актив:", reply_markup=keyboard)
 
 # --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
 @dp.callback_query(lambda c: c.data and c.data.startswith("why_"))
@@ -821,6 +913,124 @@ async def handle_pulse_button(callback: CallbackQuery):
     await callback.answer()
     pulse_text = await get_market_pulse_text()
     await callback.message.answer(pulse_text, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "add_asset")
+async def handle_add_asset_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Добавить актив'"""
+    await callback.answer()
+
+    if not gspread_client:
+        await callback.message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💼 В Спот-портфель", callback_data="add_spot")],
+        [InlineKeyboardButton(text="🪂 В Радар активностей", callback_data="add_airdrop")]
+    ])
+
+    await callback.message.answer("➕ Выберите, куда добавить актив:", reply_markup=keyboard)
+
+@dp.callback_query(lambda c: c.data == "add_spot")
+async def handle_add_spot(callback: CallbackQuery, state: FSMContext):
+    """Начало добавления актива в Спот"""
+    await callback.answer()
+    await callback.message.answer(
+        "💼 <b>Добавление в Спот-портфель</b>\n\n"
+        "Введите данные в формате:\n"
+        "<code>ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК</code>\n\n"
+        "Пример: <code>NEAR 100 4.5 12.0</code>\n\n"
+        "Отправьте /cancel для отмены.",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddSpotState.waiting_for_spot_data)
+
+@dp.callback_query(lambda c: c.data == "add_airdrop")
+async def handle_add_airdrop(callback: CallbackQuery, state: FSMContext):
+    """Начало добавления активности в Радар"""
+    await callback.answer()
+    await callback.message.answer(
+        "🪂 <b>Добавление в Радар активностей</b>\n\n"
+        "Введите данные в формате:\n"
+        "<code>ПРОЕКТ | ТИП | СТАТУС | ДЕДЛАЙН</code>\n\n"
+        "Пример: <code>Berachain | Тестнет | Квесты выполнены | Q4 2026</code>\n\n"
+        "Отправьте /cancel для отмены.",
+        parse_mode="HTML"
+    )
+    await state.set_state(AddAirdropState.waiting_for_airdrop_data)
+
+# --- ОБРАБОТЧИКИ FSM СОСТОЯНИЙ ---
+@dp.message(Command("cancel"))
+async def cancel_handler(message: Message, state: FSMContext):
+    """Отмена текущего действия"""
+    current_state = await state.get_state()
+    if current_state is None:
+        await message.answer("Нет активных действий для отмены.")
+        return
+
+    await state.clear()
+    await message.answer("❌ Действие отменено.")
+
+@dp.message(AddSpotState.waiting_for_spot_data)
+async def process_spot_data(message: Message, state: FSMContext):
+    """Обработка данных для добавления в Спот"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        # Парсим формат: ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК
+        parts = message.text.strip().split()
+        if len(parts) != 4:
+            await message.answer("❌ Неверный формат. Используйте: ТИКЕР КОЛИЧЕСТВО ВХОД ТЕЙК\nПример: NEAR 100 4.5 12.0")
+            return
+
+        ticker = parts[0].upper()
+        quantity = float(parts[1])
+        entry_price = float(parts[2])
+        take_profit = float(parts[3])
+
+        # Добавляем в таблицу
+        success, result_msg = add_spot_to_sheet(ticker, quantity, entry_price, take_profit)
+        await message.answer(result_msg, parse_mode="HTML")
+
+        if success:
+            await state.clear()
+
+    except ValueError:
+        await message.answer("❌ Ошибка: количество, вход и тейк должны быть числами.\nПример: NEAR 100 4.5 12.0")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+
+@dp.message(AddAirdropState.waiting_for_airdrop_data)
+async def process_airdrop_data(message: Message, state: FSMContext):
+    """Обработка данных для добавления в Радар активностей"""
+    if message.from_user.id != ADMIN_CHAT_ID:
+        return
+
+    try:
+        # Парсим формат: ПРОЕКТ | ТИП | СТАТУС | ДЕДЛАЙН
+        parts = [p.strip() for p in message.text.split("|")]
+        if len(parts) != 4:
+            await message.answer(
+                "❌ Неверный формат. Используйте:\n"
+                "ПРОЕКТ | ТИП | СТАТУС | ДЕДЛАЙН\n\n"
+                "Пример: Berachain | Тестнет | Квесты выполнены | Q4 2026"
+            )
+            return
+
+        project = parts[0]
+        activity_type = parts[1]
+        status = parts[2]
+        deadline = parts[3]
+
+        # Добавляем в таблицу
+        success, result_msg = add_airdrop_to_sheet(project, activity_type, status, deadline)
+        await message.answer(result_msg, parse_mode="HTML")
+
+        if success:
+            await state.clear()
+
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
 
 async def main():
     # Запуск утреннего дайджеста в 09:00

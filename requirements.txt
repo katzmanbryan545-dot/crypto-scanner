@@ -5,3 +5,5 @@ apscheduler
 openai
 tavily-python
 python-dotenv
+gspread
+google-auth

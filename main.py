@@ -1757,6 +1757,7 @@ async def start_cmd(message: Message):
     inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Портфель", callback_data="portfolio")],
         [InlineKeyboardButton(text="💰 Чистый профит / Статистика", callback_data="pnl")],
+        [InlineKeyboardButton(text="💎 Alpha-Радар", callback_data="cmd_gems")],
         [InlineKeyboardButton(text="✏️ Управление активами", callback_data="manage_assets")],
         [InlineKeyboardButton(text="📰 Дайджест дедлайнов", callback_data="digest")],
         [InlineKeyboardButton(text="🌡 Пульс рынка", callback_data="pulse")],
@@ -1768,6 +1769,7 @@ async def start_cmd(message: Message):
         f"Доступные команды:\n"
         f"/portfolio - быстрый просмотр портфеля\n"
         f"/pnl - статистика и чистый профит\n"
+        f"/gems - альфа-радар (поиск перспективных монет и мемов)\n"
         f"/manage - управление активами\n"
         f"/digest - дайджест новостей и дедлайнов\n"
         f"/check - полный аудит (цены + новости)\n"
@@ -2300,6 +2302,13 @@ async def handle_pulse_button(callback: CallbackQuery):
     await callback.answer()
     pulse_text = await get_market_pulse_text()
     await callback.message.answer(pulse_text, parse_mode="HTML")
+
+@dp.callback_query(lambda c: c.data == "cmd_gems")
+async def handle_gems_button(callback: CallbackQuery):
+    """Обработчик кнопки 'Alpha-Радар' из inline-меню"""
+    await callback.answer()
+    # Вызываем команду /gems
+    await gems_cmd(callback.message)
 
 @dp.callback_query(lambda c: c.data == "pnl")
 async def handle_pnl_button(callback: CallbackQuery):
@@ -2842,13 +2851,14 @@ async def process_target_change(message: Message, state: FSMContext):
 async def main():
     # Регистрация команд бота в меню Telegram
     commands = [
-        BotCommand(command="portfolio", description="Спот-портфель и радар активностей"),
-        BotCommand(command="pnl", description="Чистый профит и статистика"),
-        BotCommand(command="manage", description="Управление активами (усреднение/фиксация)"),
-        BotCommand(command="add", description="Добавить новый актив"),
-        BotCommand(command="digest", description="Дайджест новостей и дедлайнов"),
-        BotCommand(command="gems", description="Alpha-Радар: перспективные монеты и мемы вне топ-100"),
-        BotCommand(command="cancel", description="Отмена текущего действия")
+        BotCommand(command="gems", description="💎 Alpha-Радар (поиск монет вне топ-100)"),
+        BotCommand(command="portfolio", description="📊 Спот-портфель"),
+        BotCommand(command="pnl", description="💰 Профит и статистика"),
+        BotCommand(command="manage", description="✏️ Управление активами"),
+        BotCommand(command="digest", description="📰 Дайджест новостей"),
+        BotCommand(command="pulse", description="🫀 Рыночный пульс"),
+        BotCommand(command="add", description="➕ Добавить актив"),
+        BotCommand(command="cancel", description="❌ Отмена")
     ]
     await bot.set_my_commands(commands)
     print("[OK] Bot commands registered")

@@ -801,6 +801,59 @@ def fetch_alpha_candidates():
         print(f"Ошибка загрузки кандидатов: {e}")
         return []
 
+def get_coin_details(coin_id):
+    """Получает детальную информацию о монете для определения сектора"""
+    try:
+        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        # Извлекаем категории/теги
+        categories = data.get("categories", [])
+        return categories
+    except Exception as e:
+        print(f"Ошибка получения деталей для {coin_id}: {e}")
+        return []
+
+def determine_sector(coin):
+    """Определяет сектор монеты по метаданным CoinGecko"""
+    try:
+        coin_id = coin.get("id", "")
+        name = coin.get("name", "").lower()
+        symbol = coin.get("symbol", "").upper()
+
+        # Получаем категории из CoinGecko
+        categories = get_coin_details(coin_id)
+        categories_lower = [c.lower() if c else "" for c in categories]
+
+        # Проверяем на мемкоин
+        if any(x in categories_lower for x in ["meme", "memes", "meme token"]):
+            return "Meme"
+
+        # Проверяем остальные секторы
+        if any(x in categories_lower for x in ["depin", "internet-of-things", "iot"]):
+            return "DePIN"
+
+        if any(x in categories_lower for x in ["artificial-intelligence", "ai", "machine learning"]):
+            return "AI"
+
+        if any(x in categories_lower for x in ["real-world-assets", "rwa", "tokenized assets"]):
+            return "RWA"
+
+        if any(x in categories_lower for x in ["layer-1", "layer 1", "l1"]):
+            return "Layer 1"
+
+        if any(x in categories_lower for x in ["layer-2", "layer 2", "l2", "scaling"]):
+            return "Layer 2"
+
+        # DeFi по умолчанию
+        return "DeFi"
+
+    except Exception as e:
+        print(f"Ошибка определения сектора: {e}")
+        return "DeFi"
+
 def filter_alpha_gems(candidates):
     """Применяет фильтры ликвидности, токеномики и активности"""
     filtered = []
@@ -815,12 +868,13 @@ def filter_alpha_gems(candidates):
         try:
             # Извлекаем данные
             symbol = coin.get("symbol", "").upper()
+            coin_id = coin.get("id", "")
             market_cap = coin.get("market_cap", 0)
             volume = coin.get("total_volume", 0)
             circ_supply = coin.get("circulating_supply", 0)
             total_supply = coin.get("total_supply", 0)
 
-            # Фильтр 0: Исключаем зомби-токены и динозавров
+            # Фильтр 0: Исключаем зомби-токены
             if symbol in blacklist:
                 continue
 
@@ -828,28 +882,56 @@ def filter_alpha_gems(candidates):
             if not market_cap or not volume:
                 continue
 
-            # Фильтр 1: Рыночная капитализация $20M - $400M
-            if market_cap < 20_000_000 or market_cap > 400_000_000:
-                continue
+            # Определяем сектор
+            sector = determine_sector(coin)
+            is_meme = (sector == "Meme")
 
-            # Фильтр 2: Объём торгов > $1.5M
-            if volume < 1_500_000:
-                continue
+            # Специальная логика для мемкоинов
+            if is_meme:
+                # Для мемов: строгий порог по токеномике и объему
+                if total_supply and circ_supply:
+                    circ_ratio = circ_supply / total_supply
+                    if circ_ratio < 0.95:  # Минимум 95% в рынке
+                        continue
+                else:
+                    continue  # Пропускаем если нет данных о supply
+
+                # Минимальный объем $3M для мемов
+                if volume < 3_000_000:
+                    continue
+
+                # Для мемов разрешаем любую капитализацию в диапазоне
+                if market_cap < 20_000_000 or market_cap > 400_000_000:
+                    continue
+
+            else:
+                # Стандартные фильтры для не-мемов
+                # Фильтр 1: Рыночная капитализация $20M - $400M
+                if market_cap < 20_000_000 or market_cap > 400_000_000:
+                    continue
+
+                # Фильтр 2: Объём торгов > $1.5M
+                if volume < 1_500_000:
+                    continue
+
+                # Фильтр 4: Токеномика (минимум 40% токенов в циркуляции)
+                if total_supply and circ_supply:
+                    circ_ratio = circ_supply / total_supply
+                    if circ_ratio < 0.40:
+                        continue
+                else:
+                    circ_ratio = None
 
             # Фильтр 3: Аномалия активности (Volume/MCap >= 0.10)
             vol_mcap_ratio = volume / market_cap
             if vol_mcap_ratio < 0.10:
                 continue
 
-            # Фильтр 4: Токеномика (минимум 40% токенов в циркуляции)
-            if total_supply and circ_supply:
-                circ_ratio = circ_supply / total_supply
-                if circ_ratio < 0.40:
-                    continue
-
             # Монета прошла все фильтры
             coin["vol_mcap_ratio"] = vol_mcap_ratio
             coin["circ_ratio"] = circ_ratio if total_supply and circ_supply else None
+            coin["sector"] = sector
+            coin["is_meme"] = is_meme
             filtered.append(coin)
 
         except Exception as e:
@@ -892,12 +974,9 @@ def create_fallback_gem_plan(coin, index):
         circ_ratio = coin.get("circ_ratio", 0) * 100 if coin.get("circ_ratio") else 0
         change_24h = coin.get("price_change_percentage_24h", 0)
 
-        # Определяем сектор на основе названия (упрощенно)
-        sector = "DeFi"
-        if any(x in name.lower() for x in ["layer", "chain", "network"]):
-            sector = "Layer 1"
-        elif any(x in name.lower() for x in ["ai", "artificial"]):
-            sector = "AI"
+        # Получаем сектор из метаданных
+        sector = coin.get("sector", "DeFi")
+        is_meme = coin.get("is_meme", False)
 
         # Автоматический расчет уровней
         entry_from = price * 0.95  # -5%
@@ -921,7 +1000,11 @@ def create_fallback_gem_plan(coin, index):
             tp2 = price * 2.5  # +150%
             tp3 = price * 4.0  # +300%
 
-        driver = f"Высокая торговая активность: Volume/MCap {vol_mcap:.0f}%, разлоки чисты"
+        # Драйвер в зависимости от типа монеты
+        if is_meme:
+            driver = f"Volume/MCap {vol_mcap:.0f}%, виральность комьюнити, {circ_ratio:.0f}% токенов в рынке"
+        else:
+            driver = f"Высокая торговая активность: Volume/MCap {vol_mcap:.0f}%, разлоки чисты"
 
         return {
             "name": name,
@@ -2764,7 +2847,7 @@ async def main():
         BotCommand(command="manage", description="Управление активами (усреднение/фиксация)"),
         BotCommand(command="add", description="Добавить новый актив"),
         BotCommand(command="digest", description="Дайджест новостей и дедлайнов"),
-        BotCommand(command="gems", description="Alpha-Радар — поиск перспективных монет вне топ-100"),
+        BotCommand(command="gems", description="Alpha-Радар: перспективные монеты и мемы вне топ-100"),
         BotCommand(command="cancel", description="Отмена текущего действия")
     ]
     await bot.set_my_commands(commands)

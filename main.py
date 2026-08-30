@@ -881,123 +881,145 @@ def search_gem_news(token_name, ticker):
         print(f"Ошибка поиска новостей для {ticker}: {e}")
         return "Ошибка поиска новостей."
 
+def create_fallback_gem_plan(coin, index):
+    """Создает автоматический торговый план если AI недоступен"""
+    try:
+        name = coin.get("name", "Unknown")
+        symbol = coin.get("symbol", "").upper()
+        price = coin.get("current_price", 0)
+        market_cap = coin.get("market_cap", 0) / 1_000_000
+        vol_mcap = coin.get("vol_mcap_ratio", 0) * 100
+        circ_ratio = coin.get("circ_ratio", 0) * 100 if coin.get("circ_ratio") else 0
+        change_24h = coin.get("price_change_percentage_24h", 0)
+
+        # Определяем сектор на основе названия (упрощенно)
+        sector = "DeFi"
+        if any(x in name.lower() for x in ["layer", "chain", "network"]):
+            sector = "Layer 1"
+        elif any(x in name.lower() for x in ["ai", "artificial"]):
+            sector = "AI"
+
+        # Автоматический расчет уровней
+        entry_from = price * 0.95  # -5%
+        entry_to = price * 1.02    # +2%
+        stop = price * 0.85        # -15%
+
+        # Динамические TP на основе волатильности
+        if abs(change_24h) > 15:
+            # Высокая волатильность - консервативные цели
+            tp1 = price * 1.4  # +40%
+            tp2 = price * 2.0  # +100%
+            tp3 = price * 3.0  # +200%
+        elif abs(change_24h) > 5:
+            # Средняя волатильность
+            tp1 = price * 1.5  # +50%
+            tp2 = price * 2.2  # +120%
+            tp3 = price * 3.5  # +250%
+        else:
+            # Низкая волатильность - агрессивные цели
+            tp1 = price * 1.6  # +60%
+            tp2 = price * 2.5  # +150%
+            tp3 = price * 4.0  # +300%
+
+        driver = f"Высокая торговая активность: Volume/MCap {vol_mcap:.0f}%, разлоки чисты"
+
+        return {
+            "name": name,
+            "ticker": symbol,
+            "sector": sector,
+            "driver": driver,
+            "price": price,
+            "entry_from": entry_from,
+            "entry_to": entry_to,
+            "stop": stop,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "market_cap": market_cap,
+            "vol_mcap": vol_mcap,
+            "circ_ratio": circ_ratio
+        }
+    except Exception as e:
+        print(f"Ошибка создания fallback плана: {e}")
+        return None
+
 def analyze_gems_with_ai(top_gems):
     """Анализирует топ-гемы через LLM и формирует торговый план"""
     try:
-        # Формируем данные для LLM с поиском новостей
+        # Отбираем ТОП-5 по Volume/MCap для оптимизации
+        top_5 = sorted(top_gems, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:5]
+        print(f"Отобрано ТОП-5 монет по Volume/MCap для анализа")
+
+        # Формируем КРАТКИЕ данные для LLM (только основные метрики)
         gems_data = ""
-        for idx, gem in enumerate(top_gems, 1):
+        for idx, gem in enumerate(top_5, 1):
             name = gem.get("name", "Unknown")
             symbol = gem.get("symbol", "").upper()
             price = gem.get("current_price", 0)
-            market_cap = gem.get("market_cap", 0) / 1_000_000  # В миллионах
+            market_cap = gem.get("market_cap", 0) / 1_000_000
             vol_mcap = gem.get("vol_mcap_ratio", 0) * 100
-            circ_ratio = gem.get("circ_ratio", 0) * 100 if gem.get("circ_ratio") else 0
             change_24h = gem.get("price_change_percentage_24h", 0)
 
-            # Ищем новости для каждого токена
-            print(f"Ищу новости для {symbol}...")
-            try:
-                news = search_gem_news(name, symbol)
-            except Exception as e:
-                print(f"Ошибка поиска новостей для {symbol}: {e}")
-                news = "Новости недоступны."
+            gems_data += f"{idx}. {name} (${symbol}) | Цена: ${price} | Капа: ${market_cap:.1f}M | Vol/MCap: {vol_mcap:.0f}% | 24ч: {change_24h:+.1f}%\n"
 
-            gems_data += f"""
-{idx}. {name} (${symbol})
-   Цена: ${price}
-   Капитализация: ${market_cap:.1f}M
-   Volume/MCap: {vol_mcap:.1f}%
-   В циркуляции: {circ_ratio:.0f}%
-   Изменение 24ч: {change_24h:+.1f}%
+        # Упрощенный промпт для LLM
+        prompt = f"""Отбери 3 лучших актива из списка и составь торговый план (R/R >= 1:3).
 
-   НОВОСТИ И КАТАЛИЗАТОРЫ:
-   {news}
-"""
+ЗАПРЕТЫ:
+- Не придумывай факты
+- Не используй общие фразы ("рост спроса", "развитие")
+- Исключай старые токены (NEO, EOS, QTUM)
 
-        # Улучшенный системный промпт для LLM с запретом на выдумки
-        prompt = f"""Ты — профессиональный венчурный аналитик и криптотрейдер. Твоя задача — отобрать 3 самых перспективных актива из списка и составить точный торговый план с Risk/Reward не менее 1:3.
+ДРАЙВЕР (макс 15 слов):
+- Высокая торговая активность Volume/MCap X%
+- Технический сетап: накопление/консолидация
+- Отсутствие давления разлоков
 
-КРИТИЧЕСКИ ВАЖНО — ЗАПРЕТЫ:
-❌ НЕ используй общие фразы: "рост спроса на DeFi", "развитие экосистемы", "перспективное направление"
-❌ НЕ выбирай старые токены экосистем 2017-2020 без активной разработки (NEO, EOS, QTUM, IOTA, WAVES и подобные)
-❌ НЕ пиши банальности и маркетинговые клише
-❌ НЕ ПРИДУМЫВАЙ ФАКТЫ! Опирайся СТРОГО на предоставленные поисковые данные из раздела "НОВОСТИ И КАТАЛИЗАТОРЫ"
-❌ НЕ указывай старые исторические события (листинги 2-3 летней давности)
-❌ НЕ пиши про просто факт пампа ("вырос на 30%", "набрал импульс")
-
-ЧТО ПИСАТЬ В ДРАЙВЕРЕ (строго в указанном порядке приоритета):
-1. Если в новостях есть ПРЕДСТОЯЩИЕ события текущего квартала (Q3-Q4 2026) — используй их
-2. Если есть СВЕЖИЕ ончейн-аномалии из новостей:
-   - Резкий приток объема торгов за последние 7-14 дней
-   - Рост TVL (Total Value Locked) с конкретными цифрами
-   - Увеличение активных адресов/транзакций
-3. Если новостей мало/нет — укажи ТЕХНИЧЕСКИЙ СЕТАП:
-   - "Накопление в базе, Volume/MCap {X}%, разлоки чисты на 45+ дней"
-   - "Технический отскок от поддержки, высокая торговая активность"
-   - "Консолидация перед движением, отсутствие давления продавцов"
-
-Максимум 15 слов, только измеримые факты из данных.
-
-ПРИОРИТЕТ ОТБОРА:
-1. Проекты текущего цикла (2024-2026) и прошлого (2021-2023)
-2. Layer 1, Layer 2, DePIN, AI, DeFi, RWA — с реальным продуктом
-3. Исключай мемкоины и токены без рабочего продукта
-
-ДИНАМИЧЕСКИЙ РАСЧЕТ УРОВНЕЙ:
-- НЕ используй фиксированные +50%/+120%
-- Учитывай волатильность (изменение 24ч) и текущую цену
-- Для низковолатильных (<5% за 24ч): более агрессивные цели
-- Для высоковолатильных (>15% за 24ч): более консервативные цели
-- Стоп всегда -12% до -18% от текущей цены
-- TP1: +40-70%, TP2: +100-180%, TP3: +250-400% (индивидуально)
-
-Для каждого из 3 активов верни СТРОГО в таком формате:
+Формат ответа для каждого актива:
 
 ---АКТИВ---
-Название: [полное название]
-Тикер: [символ без $]
-Сектор: [один из: Layer 1, Layer 2, DePIN, AI, DeFi, RWA]
-Драйвер: [ТОЛЬКО на основе предоставленных данных, максимум 15 слов]
+Название: [название]
+Тикер: [символ]
+Сектор: [Layer 1/Layer 2/DePIN/AI/DeFi/RWA]
+Драйвер: [факт, макс 15 слов]
 Текущая_цена: [число]
-Вход_от: [число, -3% до -7% от текущей]
-Вход_до: [число, +1% до +3% от текущей]
-Стоп: [число, -12% до -18% от текущей]
-TP1: [число, +40-70% индивидуально]
-TP2: [число, +100-180% индивидуально]
-TP3: [число, +250-400% индивидуально]
+Вход_от: [число, -5%]
+Вход_до: [число, +2%]
+Стоп: [число, -15%]
+TP1: [число, +40-70%]
+TP2: [число, +100-180%]
+TP3: [число, +250-400%]
 ---КОНЕЦ---
 
-Список кандидатов с актуальными новостями:
-{gems_data}
+Монеты:
+{gems_data}"""
 
-Верни данные СТРОГО в указанном формате для 3 активов. В драйвере используй ТОЛЬКО предоставленные данные, не придумывай."""
-
-        # Отправляем в OpenRouter (DeepSeek)
+        # Отправляем в OpenRouter с timeout
         print("Отправляю запрос в OpenRouter API...")
         try:
             response = openai_client.chat.completions.create(
                 model="deepseek/deepseek-chat",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=2000
+                max_tokens=2000,
+                timeout=25.0
             )
 
             result = response.choices[0].message.content.strip()
             print(f"Получен ответ от AI, длина: {len(result)} символов")
-            return result
+            return result, top_5
 
         except Exception as api_error:
-            print(f"Ошибка API OpenRouter: {api_error}")
+            print(f"LLM Error: {api_error}")
             import traceback
             traceback.print_exc()
-            return None
+            return None, top_5
 
     except Exception as e:
         print(f"Ошибка анализа через AI: {e}")
         import traceback
         traceback.print_exc()
-        return None
+        return None, []
 
 async def get_market_pulse_text():
     """Формирует расширенный текст рыночного пульса"""
@@ -1780,34 +1802,56 @@ async def gems_cmd(message: Message):
 
         await message.answer(f"✅ {len(filtered)} монет прошли фильтры. Анализирую через AI...")
 
-        # Шаг 3: Берём топ-5 по активности для анализа
-        top_gems = sorted(filtered, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:5]
+        # Шаг 3: Берём топ-5 по активности для анализа (уже делается внутри analyze_gems_with_ai)
 
-        # Шаг 4: Анализ через AI
-        ai_analysis = await loop.run_in_executor(None, analyze_gems_with_ai, top_gems)
+        # Шаг 4: Анализ через AI с fallback
+        ai_result = await loop.run_in_executor(None, analyze_gems_with_ai, filtered)
 
+        if ai_result:
+            ai_analysis, top_gems = ai_result
+        else:
+            ai_analysis, top_gems = None, []
+
+        # Fallback: если AI не сработал, формируем сигналы автоматически
         if not ai_analysis:
-            await message.answer("❌ Ошибка анализа через AI")
-            return
+            await message.answer("⚠️ AI временно недоступен. Формирую сигналы автоматически на основе Volume/MCap...")
 
-        # Выводим сырой ответ AI для отладки
-        print("=" * 50)
-        print("ОТВЕТ AI:")
-        print(ai_analysis)
-        print("=" * 50)
+            # Берем ТОП-3 по Volume/MCap
+            top_3 = sorted(filtered, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:3]
 
-        # Шаг 5: Парсинг и форматирование результата
-        gems = parse_ai_gems_response(ai_analysis, top_gems)
+            gems = []
+            for idx, coin in enumerate(top_3, 1):
+                gem_plan = create_fallback_gem_plan(coin, idx)
+                if gem_plan:
+                    gems.append(gem_plan)
 
-        if not gems:
-            await message.answer(
-                "❌ Не удалось распарсить ответ AI\n\n"
-                "Попробуйте запустить /gems еще раз через 1-2 минуты."
-            )
-            # Отправляем сырой ответ для диагностики
-            if len(ai_analysis) < 3000:
-                await message.answer(f"<code>{ai_analysis[:3000]}</code>", parse_mode="HTML")
-            return
+            if not gems:
+                await message.answer("❌ Не удалось сформировать сигналы")
+                return
+        else:
+            # Выводим сырой ответ AI для отладки
+            print("=" * 50)
+            print("ОТВЕТ AI:")
+            print(ai_analysis)
+            print("=" * 50)
+
+            # Шаг 5: Парсинг и форматирование результата
+            gems = parse_ai_gems_response(ai_analysis, top_gems)
+
+            if not gems:
+                await message.answer("⚠️ Ошибка парсинга AI. Использую автоматический режим...")
+
+                # Fallback на автоматические сигналы
+                top_3 = sorted(filtered, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:3]
+                gems = []
+                for idx, coin in enumerate(top_3, 1):
+                    gem_plan = create_fallback_gem_plan(coin, idx)
+                    if gem_plan:
+                        gems.append(gem_plan)
+
+                if not gems:
+                    await message.answer("❌ Не удалось сформировать сигналы")
+                    return
 
         # Шаг 6: Отправка результатов
         await message.answer("💎 <b>ALPHA-РАДАР | ПОИСК АСИММЕТРИИ (GEMS)</b>\n", parse_mode="HTML")

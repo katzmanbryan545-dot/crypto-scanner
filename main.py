@@ -2322,33 +2322,33 @@ async def handle_volatility_research(callback: CallbackQuery):
     result_text = f"🔍 <b>Причина волатильности {coin_name.upper()}:</b>\n\n{reason}"
     await callback.message.answer(result_text, parse_mode="HTML")
 
-@dp.callback_query(lambda c: c.data == "portfolio")
+@dp.callback_query(lambda c: c.data and c.data == "portfolio")
 async def handle_portfolio_button(callback: CallbackQuery):
     """Обработчик кнопки 'Портфель' - только цены, без новостей"""
     await callback.answer()
     await send_portfolio_view()
 
-@dp.callback_query(lambda c: c.data == "digest")
+@dp.callback_query(lambda c: c.data and c.data == "digest")
 async def handle_digest_button(callback: CallbackQuery):
     """Обработчик кнопки 'Дайджест дедлайнов' - только новости"""
     await callback.answer()
     await send_news_digest()
 
-@dp.callback_query(lambda c: c.data == "pulse")
+@dp.callback_query(lambda c: c.data and c.data == "pulse")
 async def handle_pulse_button(callback: CallbackQuery):
     """Обработчик кнопки 'Пульс рынка'"""
     await callback.answer()
     pulse_text = await get_market_pulse_text()
     await callback.message.answer(pulse_text, parse_mode="HTML")
 
-@dp.callback_query(lambda c: c.data == "cmd_gems")
+@dp.callback_query(lambda c: c.data and c.data == "cmd_gems")
 async def handle_gems_button(callback: CallbackQuery):
     """Обработчик кнопки 'Alpha-Радар' из inline-меню"""
     await callback.answer()
     # Вызываем команду /gems
     await gems_cmd(callback.message)
 
-@dp.callback_query(lambda c: c.data == "pnl")
+@dp.callback_query(lambda c: c.data and c.data == "pnl")
 async def handle_pnl_button(callback: CallbackQuery):
     """Обработчик кнопки 'Чистый профит / Статистика'"""
     await callback.answer()
@@ -2394,7 +2394,7 @@ async def handle_pnl_button(callback: CallbackQuery):
 
     await callback.message.answer(pnl_text, parse_mode="HTML")
 
-@dp.callback_query(lambda c: c.data == "add_asset")
+@dp.callback_query(lambda c: c.data and c.data == "add_asset")
 async def handle_add_asset_button(callback: CallbackQuery):
     """Обработчик кнопки 'Добавить актив'"""
     await callback.answer()
@@ -2410,7 +2410,7 @@ async def handle_add_asset_button(callback: CallbackQuery):
 
     await callback.message.answer("➕ Выберите, куда добавить актив:", reply_markup=keyboard)
 
-@dp.callback_query(lambda c: c.data == "add_spot")
+@dp.callback_query(lambda c: c.data and c.data == "add_spot")
 async def handle_add_spot(callback: CallbackQuery, state: FSMContext):
     """Начало добавления актива в Спот"""
     await callback.answer()
@@ -2424,7 +2424,7 @@ async def handle_add_spot(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AddSpotState.waiting_for_spot_data)
 
-@dp.callback_query(lambda c: c.data == "add_airdrop")
+@dp.callback_query(lambda c: c.data and c.data == "add_airdrop")
 async def handle_add_airdrop(callback: CallbackQuery, state: FSMContext):
     """Начало добавления активности в Радар"""
     await callback.answer()
@@ -2438,7 +2438,7 @@ async def handle_add_airdrop(callback: CallbackQuery, state: FSMContext):
     )
     await state.set_state(AddAirdropState.waiting_for_airdrop_data)
 
-@dp.callback_query(lambda c: c.data == "manage_assets")
+@dp.callback_query(lambda c: c.data and c.data == "manage_assets")
 async def handle_manage_assets_button(callback: CallbackQuery):
     """Обработчик кнопки 'Управление активами'"""
     await callback.answer()

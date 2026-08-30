@@ -816,12 +816,31 @@ def get_coin_details(coin_id):
         print(f"Ошибка получения деталей для {coin_id}: {e}")
         return []
 
+# Словарь-справочник известных токенов и их секторов
+SECTOR_MAP = {
+    "HNT": "DePIN", "AKT": "DePIN", "ATH": "DePIN", "GRASS": "DePIN", "RNDR": "DePIN",
+    "RENDER": "DePIN", "FIL": "DePIN", "AR": "DePIN",
+    "BOME": "Meme", "PEPE": "Meme", "WIF": "Meme", "BONK": "Meme", "FLOKI": "Meme",
+    "DOGE": "Meme", "SHIB": "Meme", "BABYDOGE": "Meme", "ELON": "Meme", "SAMO": "Meme",
+    "PROM": "Layer 2", "ARB": "Layer 2", "OP": "Layer 2", "STRK": "Layer 2",
+    "MATIC": "Layer 2", "METIS": "Layer 2", "IMX": "Layer 2", "MANTA": "Layer 2",
+    "FET": "AI", "NEAR": "AI", "TAO": "AI", "AGIX": "AI", "OCEAN": "AI", "GRT": "AI",
+    "ONDO": "RWA", "MKR": "RWA", "POLYX": "RWA", "RIO": "RWA",
+    "PENDLE": "DeFi", "AAVE": "DeFi", "UNI": "DeFi", "CRV": "DeFi", "SNX": "DeFi",
+    "SOL": "Layer 1", "AVAX": "Layer 1", "ATOM": "Layer 1", "DOT": "Layer 1",
+    "SUI": "Layer 1", "APT": "Layer 1", "SEI": "Layer 1", "INJ": "Layer 1"
+}
+
 def determine_sector(coin):
-    """Определяет сектор монеты по метаданным CoinGecko"""
+    """Определяет сектор монеты: сначала по словарю, затем по метаданным CoinGecko"""
     try:
         coin_id = coin.get("id", "")
         name = coin.get("name", "").lower()
         symbol = coin.get("symbol", "").upper()
+
+        # Проверяем прямой маппинг в словаре
+        if symbol in SECTOR_MAP:
+            return SECTOR_MAP[symbol]
 
         # Получаем категории из CoinGecko
         categories = get_coin_details(coin_id)
@@ -847,12 +866,19 @@ def determine_sector(coin):
         if any(x in categories_lower for x in ["layer-2", "layer 2", "l2", "scaling"]):
             return "Layer 2"
 
-        # DeFi по умолчанию
-        return "DeFi"
+        # Проверяем ключевые слова в имени и символе
+        name_and_symbol = (name + " " + symbol).lower()
+        if any(kw in name_and_symbol for kw in ["meme", "doge", "inu", "pepe", "shib"]):
+            return "Meme"
+        if any(kw in name_and_symbol for kw in ["defi", "swap", "dex", "finance"]):
+            return "DeFi"
+
+        # Altcoin по умолчанию
+        return "Altcoin"
 
     except Exception as e:
         print(f"Ошибка определения сектора: {e}")
-        return "DeFi"
+        return "Altcoin"
 
 def filter_alpha_gems(candidates):
     """Применяет фильтры ликвидности, токеномики и активности"""
@@ -975,7 +1001,7 @@ def create_fallback_gem_plan(coin, index):
         change_24h = coin.get("price_change_percentage_24h", 0)
 
         # Получаем сектор из метаданных
-        sector = coin.get("sector", "DeFi")
+        sector = coin.get("sector", "Altcoin")
         is_meme = coin.get("is_meme", False)
 
         # Автоматический расчет уровней
@@ -1000,11 +1026,20 @@ def create_fallback_gem_plan(coin, index):
             tp2 = price * 2.5  # +150%
             tp3 = price * 4.0  # +300%
 
-        # Драйвер в зависимости от типа монеты
-        if is_meme:
-            driver = f"Volume/MCap {vol_mcap:.0f}%, виральность комьюнити, {circ_ratio:.0f}% токенов в рынке"
+        # Динамический драйвер в зависимости от сектора монеты
+        if is_meme or sector == "Meme":
+            # Для мемкоинов
+            driver = f"Аномальный объем торгов ({vol_mcap:.0f}% от капы), 100% циркуляция в рынке, отсутствие инфляционного давления"
+        elif sector in ["DePIN", "AI", "Layer 2", "Layer 1"]:
+            # Для технологических проектов
+            driver = f"Высокий приток ликвидности при отсутствии крупных клифф-разлоков в ближайшие 45 дней. Сетап под накопление"
+        elif sector == "RWA":
+            driver = f"Институциональный интерес к токенизации активов, Volume/MCap {vol_mcap:.0f}%, чистая токеномика"
+        elif sector == "DeFi":
+            driver = f"Рост активности протокола, Volume/MCap {vol_mcap:.0f}%, отсутствие крупных анлоков"
         else:
-            driver = f"Высокая торговая активность: Volume/MCap {vol_mcap:.0f}%, разлоки чисты"
+            # Для остальных (Altcoin)
+            driver = f"Высокая торговая активность: Volume/MCap {vol_mcap:.0f}%, разлоки чисты на 45+ дней"
 
         return {
             "name": name,
@@ -1042,8 +1077,9 @@ def analyze_gems_with_ai(top_gems):
             market_cap = gem.get("market_cap", 0) / 1_000_000
             vol_mcap = gem.get("vol_mcap_ratio", 0) * 100
             change_24h = gem.get("price_change_percentage_24h", 0)
+            sector = gem.get("sector", "Altcoin")
 
-            gems_data += f"{idx}. {name} (${symbol}) | Цена: ${price} | Капа: ${market_cap:.1f}M | Vol/MCap: {vol_mcap:.0f}% | 24ч: {change_24h:+.1f}%\n"
+            gems_data += f"{idx}. {name} (${symbol}) | Сектор: {sector} | Цена: ${price} | Капа: ${market_cap:.1f}M | Vol/MCap: {vol_mcap:.0f}% | 24ч: {change_24h:+.1f}%\n"
 
         # Упрощенный промпт для LLM
         prompt = f"""Отбери 3 лучших актива из списка и составь торговый план (R/R >= 1:3).
@@ -1054,16 +1090,16 @@ def analyze_gems_with_ai(top_gems):
 - Исключай старые токены (NEO, EOS, QTUM)
 
 ДРАЙВЕР (макс 15 слов):
-- Высокая торговая активность Volume/MCap X%
-- Технический сетап: накопление/консолидация
-- Отсутствие давления разлоков
+- Для Meme: Аномальный объем торгов (X% от капы), 100% циркуляция, вирусность
+- Для DePIN/AI/Layer 2: Высокий приток ликвидности, отсутствие крупных клифф-разлоков в ближайшие 45 дней
+- Для остальных: Высокая торговая активность Volume/MCap X%, технический сетап
 
 Формат ответа для каждого актива:
 
 ---АКТИВ---
 Название: [название]
 Тикер: [символ]
-Сектор: [Layer 1/Layer 2/DePIN/AI/DeFi/RWA]
+Сектор: [используй ТОЧНЫЙ сектор из списка выше]
 Драйвер: [факт, макс 15 слов]
 Текущая_цена: [число]
 Вход_от: [число, -5%]
@@ -1079,6 +1115,7 @@ TP3: [число, +250-400%]
 
         # Отправляем в OpenRouter с timeout
         print("Отправляю запрос в OpenRouter API...")
+        print(f"OPENROUTER_API_KEY present: {bool(OPENROUTER_API_KEY)}")
         try:
             response = openai_client.chat.completions.create(
                 model="deepseek/deepseek-chat",
@@ -1094,6 +1131,7 @@ TP3: [число, +250-400%]
 
         except Exception as api_error:
             print(f"LLM Error: {api_error}")
+            print(f"Error type: {type(api_error).__name__}")
             import traceback
             traceback.print_exc()
             return None, top_5

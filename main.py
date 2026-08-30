@@ -897,7 +897,11 @@ def analyze_gems_with_ai(top_gems):
 
             # Ищем новости для каждого токена
             print(f"Ищу новости для {symbol}...")
-            news = search_gem_news(name, symbol)
+            try:
+                news = search_gem_news(name, symbol)
+            except Exception as e:
+                print(f"Ошибка поиска новостей для {symbol}: {e}")
+                news = "Новости недоступны."
 
             gems_data += f"""
 {idx}. {name} (${symbol})
@@ -970,17 +974,29 @@ TP3: [число, +250-400% индивидуально]
 Верни данные СТРОГО в указанном формате для 3 активов. В драйвере используй ТОЛЬКО предоставленные данные, не придумывай."""
 
         # Отправляем в OpenRouter (DeepSeek)
-        response = openai_client.chat.completions.create(
-            model="deepseek/deepseek-chat",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
-        )
+        print("Отправляю запрос в OpenRouter API...")
+        try:
+            response = openai_client.chat.completions.create(
+                model="deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=2000
+            )
 
-        result = response.choices[0].message.content.strip()
-        return result
+            result = response.choices[0].message.content.strip()
+            print(f"Получен ответ от AI, длина: {len(result)} символов")
+            return result
+
+        except Exception as api_error:
+            print(f"Ошибка API OpenRouter: {api_error}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     except Exception as e:
         print(f"Ошибка анализа через AI: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 async def get_market_pulse_text():

@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 import pandas as pd
 import requests
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.filters import Command, StateFilter
@@ -3150,7 +3151,27 @@ async def process_target_change(message: Message, state: FSMContext):
     except Exception as e:
         await message.answer(f"❌ Ошибка: {str(e)}")
 
+# --- HEALTH CHECK СЕРВЕР ДЛЯ RENDER.COM ---
+async def health_check(request):
+    """Health check endpoint для Render.com"""
+    return web.json_response({"status": "ok"})
+
+async def run_web_server():
+    """Запуск HTTP сервера для health checks"""
+    app = web.Application()
+    app.router.add_get('/', health_check)
+
+    port = int(os.getenv("PORT", 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logger.info(f"Health check server started on port {port}")
+
 async def main():
+    # Запускаем health check сервер в фоне
+    asyncio.create_task(run_web_server())
+
     # Регистрация команд бота в меню Telegram
     commands = [
         BotCommand(command="summary", description="📊 Быстрая сводка портфеля"),

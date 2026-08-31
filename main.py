@@ -4,7 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 import pandas as pd
 import requests
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -65,6 +65,23 @@ bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 scheduler = AsyncIOScheduler()
+
+# --- ГЛОБАЛЬНАЯ ЗАЩИТА: TOTAL WHITELIST LOCKDOWN ---
+class AuthMiddleware(BaseMiddleware):
+    """Middleware для полной блокировки доступа неавторизованных пользователей"""
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if not user or user.id != ADMIN_CHAT_ID:
+            if isinstance(event, CallbackQuery):
+                await event.answer("⛔ Доступ запрещен. Бот приватный.", show_alert=True)
+            elif isinstance(event, Message):
+                await event.answer("⛔ Доступ ограничен. Это приватный торговый терминал.")
+            return  # Полная блокировка дальнейшего выполнения
+        return await handler(event, data)
+
+# Регистрируем middleware для всех сообщений и callback-запросов
+dp.message.middleware(AuthMiddleware())
+dp.callback_query.middleware(AuthMiddleware())
 
 # --- НАСТРОЙКА GOOGLE SHEETS API ---
 def init_gspread():
@@ -1790,9 +1807,6 @@ async def send_news_digest():
 
 @dp.message(Command("start"))
 async def start_cmd(message: Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        await message.answer("У вас нет доступа к этому боту.")
-        return
 
     # Инлайн-меню с кнопками
     inline_keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -1828,26 +1842,18 @@ async def start_cmd(message: Message):
 
 @dp.message(Command("portfolio"))
 async def portfolio_cmd(message: Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await send_portfolio_view()
 
 @dp.message(Command("digest"))
 async def digest_cmd(message: Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await send_news_digest()
 
 @dp.message(Command("check"))
 async def manual_check(message: Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await send_daily_digest()
 
 @dp.message(Command("pulse"))
 async def pulse_cmd(message: Message):
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     pulse_text = await get_market_pulse_text()
     await message.answer(pulse_text, parse_mode="HTML")
@@ -1855,8 +1861,6 @@ async def pulse_cmd(message: Message):
 @dp.message(Command("pnl"))
 async def pnl_cmd(message: Message):
     """Команда для отображения чистого профита и статистики"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     if not gspread_client:
         await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
@@ -1902,8 +1906,6 @@ async def pnl_cmd(message: Message):
 @dp.message(Command("gems"))
 async def gems_cmd(message: Message):
     """Команда Alpha-Радар - поиск перспективных гемов"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     await message.answer("💎 <b>ALPHA-РАДАР</b>\n\n🔍 Сканирую рынок монет вне топ-100...", parse_mode="HTML")
 
@@ -2181,8 +2183,6 @@ def format_gem_message(index, gem):
 @dp.message(Command("add"))
 async def add_cmd(message: Message):
     """Команда для добавления актива"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     if not gspread_client:
         await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
@@ -2198,8 +2198,6 @@ async def add_cmd(message: Message):
 @dp.message(Command("manage"))
 async def manage_cmd(message: Message):
     """Команда для управления активами"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     if not gspread_client:
         await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
@@ -2229,15 +2227,11 @@ async def manage_cmd(message: Message):
 @dp.message(F.text == "📊 Портфель")
 async def keyboard_portfolio(message: Message):
     """Обработчик кнопки 'Портфель'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await send_portfolio_view()
 
 @dp.message(F.text == "💰 Профит / PnL")
 async def keyboard_pnl(message: Message):
     """Обработчик кнопки 'Профит / PnL'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     if not gspread_client:
         await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
@@ -2272,37 +2266,27 @@ async def keyboard_pnl(message: Message):
 @dp.message(F.text == "✏️ Управление")
 async def keyboard_manage(message: Message):
     """Обработчик кнопки 'Управление'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await manage_cmd(message)
 
 @dp.message(F.text == "➕ Добавить актив")
 async def keyboard_add(message: Message):
     """Обработчик кнопки 'Добавить актив'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await add_cmd(message)
 
 @dp.message(F.text == "📰 Дайджест")
 async def keyboard_digest(message: Message):
     """Обработчик кнопки 'Дайджест'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await send_news_digest()
 
 @dp.message(F.text == "🫀 Пульс рынка")
 async def keyboard_pulse(message: Message):
     """Обработчик кнопки 'Пульс рынка'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     pulse_text = await get_market_pulse_text()
     await message.answer(pulse_text, parse_mode="HTML")
 
 @dp.message(F.text == "💎 Alpha-Радар")
 async def keyboard_gems(message: Message):
     """Обработчик кнопки 'Alpha-Радар'"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
     await gems_cmd(message)
 
 # --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
@@ -2660,8 +2644,6 @@ async def cancel_handler(message: Message, state: FSMContext):
 @dp.message(AddSpotState.waiting_for_spot_data)
 async def process_spot_data(message: Message, state: FSMContext):
     """Обработка данных для добавления в Спот"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     try:
         # Проверяем, добавляем ли из гема
@@ -2704,8 +2686,6 @@ async def process_spot_data(message: Message, state: FSMContext):
 @dp.message(AddAirdropState.waiting_for_airdrop_data)
 async def process_airdrop_data(message: Message, state: FSMContext):
     """Обработка данных для добавления в Радар активностей"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     try:
         # Парсим формат: ПРОЕКТ | ТИП | СТАТУС | ДЕДЛАЙН
@@ -2736,8 +2716,6 @@ async def process_airdrop_data(message: Message, state: FSMContext):
 @dp.message(ManagePositionState.waiting_for_buy_amount)
 async def process_buy_data(message: Message, state: FSMContext):
     """Обработка докупки"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     try:
         data = await state.get_data()
@@ -2788,8 +2766,6 @@ async def process_buy_data(message: Message, state: FSMContext):
 @dp.message(ManagePositionState.waiting_for_sell_amount)
 async def process_sell_data(message: Message, state: FSMContext):
     """Обработка фиксации профита"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     try:
         data = await state.get_data()
@@ -2863,8 +2839,6 @@ async def process_sell_data(message: Message, state: FSMContext):
 @dp.message(ManagePositionState.waiting_for_new_target)
 async def process_target_change(message: Message, state: FSMContext):
     """Обработка изменения цели"""
-    if message.from_user.id != ADMIN_CHAT_ID:
-        return
 
     try:
         data = await state.get_data()

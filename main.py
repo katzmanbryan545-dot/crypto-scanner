@@ -90,7 +90,8 @@ def get_main_keyboard():
     """Создает постоянную клавиатуру быстрого доступа"""
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📊 Портфель"), KeyboardButton(text="💰 Профит / PnL")],
+            [KeyboardButton(text="📊 Сводка"), KeyboardButton(text="💰 Профит / PnL")],
+            [KeyboardButton(text="📊 Портфель"), KeyboardButton(text="🔔 Алерты")],
             [KeyboardButton(text="✏️ Управление"), KeyboardButton(text="➕ Добавить актив")],
             [KeyboardButton(text="📰 Дайджест"), KeyboardButton(text="🫀 Пульс рынка")],
             [KeyboardButton(text="💎 Alpha-Радар")]
@@ -2563,6 +2564,16 @@ async def keyboard_gems(message: Message):
     """Обработчик кнопки 'Alpha-Радар'"""
     await gems_cmd(message)
 
+@dp.message(F.text == "📊 Сводка")
+async def keyboard_summary(message: Message):
+    """Обработчик кнопки 'Сводка'"""
+    await summary_cmd(message)
+
+@dp.message(F.text == "🔔 Алерты")
+async def keyboard_alerts(message: Message):
+    """Обработчик кнопки 'Алерты'"""
+    await alerts_cmd(message)
+
 # --- ОБРАБОТЧИКИ CALLBACK ЗАПРОСОВ ---
 @dp.callback_query(lambda c: c.data and c.data.startswith("why_"))
 async def handle_volatility_research(callback: CallbackQuery):
@@ -3140,9 +3151,11 @@ async def process_target_change(message: Message, state: FSMContext):
 async def main():
     # Регистрация команд бота в меню Telegram
     commands = [
+        BotCommand(command="summary", description="📊 Быстрая сводка портфеля"),
         BotCommand(command="gems", description="💎 Alpha-Радар (поиск монет вне топ-100)"),
         BotCommand(command="portfolio", description="📊 Спот-портфель"),
         BotCommand(command="pnl", description="💰 Профит и статистика"),
+        BotCommand(command="alerts", description="🔔 История алертов"),
         BotCommand(command="manage", description="✏️ Управление активами"),
         BotCommand(command="digest", description="📰 Дайджест новостей"),
         BotCommand(command="pulse", description="🫀 Рыночный пульс"),

@@ -1,7 +1,10 @@
 import os
 import json
 import asyncio
+import logging
+import time
 from datetime import datetime, timedelta
+from functools import wraps
 import pandas as pd
 import requests
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
@@ -19,6 +22,53 @@ from google.oauth2.service_account import Credentials
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot_errors.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Retry декоратор для API запросов
+def retry_on_failure(max_retries=3, delay=1, backoff=2):
+    """
+    Декоратор для повторных попыток при ошибках API
+    max_retries: максимальное количество попыток
+    delay: начальная задержка в секундах
+    backoff: множитель для экспоненциального роста задержки
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            current_delay = delay
+
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except (requests.exceptions.RequestException,
+                        requests.exceptions.Timeout,
+                        requests.exceptions.HTTPError) as e:
+                    retries += 1
+                    if retries >= max_retries:
+                        logger.error(f"Failed after {max_retries} retries in {func.__name__}: {e}")
+                        raise
+
+                    logger.warning(f"Retry {retries}/{max_retries} for {func.__name__} after error: {e}")
+                    time.sleep(current_delay)
+                    current_delay *= backoff
+                except Exception as e:
+                    logger.error(f"Unexpected error in {func.__name__}: {e}", exc_info=True)
+                    raise
+
+            return None
+        return wrapper
+    return decorator
 
 # --- FSM СОСТОЯНИЯ ДЛЯ ДОБАВЛЕНИЯ АКТИВОВ ---
 class AddSpotState(StatesGroup):
@@ -328,6 +378,49 @@ def get_realized_profit():
         print(f"Error getting realized profit: {e}")
         return 0.0
 
+def get_trade_statistics():
+    """Получает расширенную статистику сделок: Win Rate, количество сделок, средний профит"""
+    try:
+        worksheet = ensure_profit_history_sheet()
+        if not worksheet:
+            return {"total_trades": 0, "winning_trades": 0, "win_rate": 0.0, "avg_profit": 0.0, "total_profit": 0.0}
+
+        all_values = worksheet.get_all_values()
+        if len(all_values) <= 1:
+            return {"total_trades": 0, "winning_trades": 0, "win_rate": 0.0, "avg_profit": 0.0, "total_profit": 0.0}
+
+        total_trades = 0
+        winning_trades = 0
+        total_profit = 0.0
+        profits = []
+
+        for row in all_values[1:]:  # Пропускаем заголовок
+            if len(row) > 5 and row[5]:  # Колонка "Профит $"
+                try:
+                    profit = float(row[5])
+                    total_profit += profit
+                    profits.append(profit)
+                    total_trades += 1
+                    if profit > 0:
+                        winning_trades += 1
+                except ValueError:
+                    continue
+
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0.0
+        avg_profit = (total_profit / total_trades) if total_trades > 0 else 0.0
+
+        return {
+            "total_trades": total_trades,
+            "winning_trades": winning_trades,
+            "losing_trades": total_trades - winning_trades,
+            "win_rate": win_rate,
+            "avg_profit": avg_profit,
+            "total_profit": total_profit
+        }
+    except Exception as e:
+        print(f"Error getting trade statistics: {e}")
+        return {"total_trades": 0, "winning_trades": 0, "win_rate": 0.0, "avg_profit": 0.0, "total_profit": 0.0}
+
 def get_profit_by_ticker(ticker):
     """Получает суммарную прибыль по конкретному тикеру"""
     try:
@@ -390,6 +483,10 @@ def calculate_unrealized_pnl(spot_positions, prices_data):
 
 # Кэш алертов волатильности: {coin_name: last_alert_timestamp}
 volatility_alerts_cache = {}
+
+# История алертов волатильности (максимум 50 последних)
+volatility_alerts_history = []
+MAX_ALERTS_HISTORY = 50
 
 # Маппинг популярных тикеров в CoinGecko coin_id
 COIN_MAP = {
@@ -675,6 +772,7 @@ def analyze_project_news(project_name):
         return error_msg
 
 # --- МОДУЛЬ MARKET PULSE (РЫНОЧНЫЙ ПУЛЬС) ---
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
 def get_fear_greed_index():
     """Получает индекс страха и жадности с API"""
     try:
@@ -694,7 +792,7 @@ def get_fear_greed_index():
             }
         return None
     except Exception as e:
-        print(f"Ошибка получения Fear & Greed Index: {e}")
+        logger.error(f"Ошибка получения Fear & Greed Index: {e}")
         return None
 
 def get_btc_price():
@@ -713,6 +811,7 @@ def get_btc_price():
         print(f"Ошибка получения цены BTC: {e}")
         return None, None
 
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
 def get_top_coins_prices():
     """Получает цены топ криптовалют (BTC, ETH, SOL, BNB)"""
     try:
@@ -725,9 +824,10 @@ def get_top_coins_prices():
         response = requests.get(url, params=params, timeout=10).json()
         return response
     except Exception as e:
-        print(f"Ошибка получения цен топ монет: {e}")
+        logger.error(f"Ошибка получения цен топ монет: {e}")
         return {}
 
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
 def get_global_market_data():
     """Получает глобальные рыночные данные"""
     try:
@@ -744,7 +844,7 @@ def get_global_market_data():
             }
         return None
     except Exception as e:
-        print(f"Ошибка получения глобальных данных: {e}")
+        logger.error(f"Ошибка получения глобальных данных: {e}")
         return None
 
 def get_eth_gas_price():
@@ -788,6 +888,7 @@ def get_altcoin_season_index():
 
 # --- МОДУЛЬ ALPHA-РАДАР (ПОИСК ГЕМОВ) ---
 
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
 def fetch_alpha_candidates():
     """Загружает кандидатов из рангов 101-400 с CoinGecko"""
     try:
@@ -815,7 +916,7 @@ def fetch_alpha_candidates():
         return candidates
 
     except Exception as e:
-        print(f"Ошибка загрузки кандидатов: {e}")
+        logger.error(f"Ошибка загрузки кандидатов: {e}")
         return []
 
 def get_coin_details(coin_id):
@@ -1072,7 +1173,8 @@ def create_fallback_gem_plan(coin, index):
             "tp3": tp3,
             "market_cap": market_cap,
             "vol_mcap": vol_mcap,
-            "circ_ratio": circ_ratio
+            "circ_ratio": circ_ratio,
+            "volume_24h": coin.get("total_volume", 0)  # Добавляем 24h volume
         }
     except Exception as e:
         print(f"Ошибка создания fallback плана: {e}")
@@ -1159,6 +1261,7 @@ TP3: [число, +250-400%]
         traceback.print_exc()
         return None, []
 
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
 def get_funding_rate(symbol="BTCUSDT"):
     """Получает ставку фондирования с Binance Futures"""
     try:
@@ -1170,7 +1273,7 @@ def get_funding_rate(symbol="BTCUSDT"):
         funding_rate = float(data.get("lastFundingRate", 0)) * 100  # Конвертируем в проценты
         return funding_rate
     except Exception as e:
-        print(f"Ошибка получения Funding Rate для {symbol}: {e}")
+        logger.error(f"Ошибка получения Funding Rate для {symbol}: {e}")
         return None
 
 async def get_market_pulse_text():
@@ -1479,6 +1582,21 @@ async def check_volatility_alerts():
                 )
                 # Обновляем кэш
                 volatility_alerts_cache[coin_name] = now
+
+                # Добавляем в историю алертов
+                alert_record = {
+                    "timestamp": now,
+                    "coin": coin_name,
+                    "change_24h": change24h,
+                    "price": curr_price,
+                    "direction": "pump" if change24h > 0 else "dump"
+                }
+                volatility_alerts_history.append(alert_record)
+
+                # Ограничиваем размер истории
+                if len(volatility_alerts_history) > MAX_ALERTS_HISTORY:
+                    volatility_alerts_history.pop(0)
+
                 print(f"Алерт отправлен для {coin_name}: {change24h:+.2f}%")
             except Exception as e:
                 print(f"Ошибка отправки алерта для {coin_name}: {e}")
@@ -1870,8 +1988,8 @@ async def pnl_cmd(message: Message):
 
     loop = asyncio.get_event_loop()
 
-    # Получаем реализованную прибыль
-    realized_profit = await loop.run_in_executor(None, get_realized_profit)
+    # Получаем расширенную статистику сделок
+    trade_stats = await loop.run_in_executor(None, get_trade_statistics)
 
     # Получаем спот-позиции и актуальные цены
     spot_positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
@@ -1883,25 +2001,175 @@ async def pnl_cmd(message: Message):
     )
 
     # Общая прибыль
+    realized_profit = trade_stats["total_profit"]
     total_profit = realized_profit + unrealized_usd
+
+    # Рассчитываем общий ROI портфеля
+    total_invested = sum(pos['entry_price'] * pos['quantity'] for pos in spot_positions if pos['entry_price'] > 0 and pos['quantity'] > 0)
+    portfolio_roi = (total_profit / total_invested * 100) if total_invested > 0 else 0
 
     # Форматирование
     realized_str = f"+${realized_profit:.2f}" if realized_profit >= 0 else f"-${abs(realized_profit):.2f}"
     unrealized_str = f"+${unrealized_usd:.2f}" if unrealized_usd >= 0 else f"-${abs(unrealized_usd):.2f}"
     unrealized_pct_str = f"+{unrealized_pct:.1f}%" if unrealized_pct >= 0 else f"{unrealized_pct:.1f}%"
     total_str = f"+${total_profit:.2f}" if total_profit >= 0 else f"-${abs(total_profit):.2f}"
+    roi_str = f"+{portfolio_roi:.1f}%" if portfolio_roi >= 0 else f"{portfolio_roi:.1f}%"
 
     # Эмодзи в зависимости от результата
     emoji = "🟢" if total_profit >= 0 else "🔴"
 
     pnl_text = (
         f"📊 <b>Сводка доходности портфеля:</b>\n\n"
-        f"💰 Реализованная чистая прибыль: <b>{realized_str}</b>\n"
-        f"📈 Плавающий PnL (открытые позиции): <b>{unrealized_str}</b> ({unrealized_pct_str})\n"
-        f"{emoji} <b>Всего заработано: {total_str}</b>"
+        f"💰 Реализованная прибыль: <b>{realized_str}</b>\n"
+        f"📈 Плавающий PnL: <b>{unrealized_str}</b> ({unrealized_pct_str})\n"
+        f"{emoji} <b>Всего заработано: {total_str}</b>\n"
+        f"📊 <b>Общий ROI: {roi_str}</b>\n\n"
+        f"📉 <b>Статистика сделок:</b>\n"
+        f"🔢 Всего сделок: <b>{trade_stats['total_trades']}</b>\n"
+        f"✅ Прибыльных: <b>{trade_stats['winning_trades']}</b>\n"
+        f"❌ Убыточных: <b>{trade_stats['losing_trades']}</b>\n"
+        f"🎯 Win Rate: <b>{trade_stats['win_rate']:.1f}%</b>\n"
+        f"💵 Средний профит: <b>${trade_stats['avg_profit']:.2f}</b>"
     )
 
     await message.answer(pnl_text, parse_mode="HTML")
+
+@dp.message(Command("alerts"))
+async def alerts_cmd(message: Message):
+    """Команда для просмотра истории алертов волатильности"""
+
+    if not volatility_alerts_history:
+        await message.answer("📭 История алертов пуста. Алерты появятся при обнаружении волатильности ≥15%.")
+        return
+
+    # Берём последние 5 алертов
+    recent_alerts = volatility_alerts_history[-5:]
+    recent_alerts.reverse()  # От новых к старым
+
+    alerts_text = "🔔 <b>История алертов волатильности</b>\n\n"
+
+    for idx, alert in enumerate(recent_alerts, 1):
+        timestamp = alert["timestamp"]
+        coin = alert["coin"]
+        change = alert["change_24h"]
+        price = alert["price"]
+        direction_emoji = "🚀" if alert["direction"] == "pump" else "📉"
+
+        # Форматируем время
+        time_str = timestamp.strftime("%d.%m.%Y %H:%M")
+        change_str = f"+{change:.2f}%" if change > 0 else f"{change:.2f}%"
+
+        alerts_text += (
+            f"{idx}. {direction_emoji} <b>{coin.upper()}</b>\n"
+            f"   Изменение: <b>{change_str}</b>\n"
+            f"   Цена: ${price:.6f}\n"
+            f"   Время: {time_str}\n\n"
+        )
+
+    alerts_text += f"📊 Всего алертов в истории: <b>{len(volatility_alerts_history)}</b>"
+
+    await message.answer(alerts_text, parse_mode="HTML")
+
+@dp.message(Command("summary"))
+async def summary_cmd(message: Message):
+    """Быстрая сводка портфеля: Total Value, PnL, Best/Worst performers"""
+
+    if not gspread_client:
+        await message.answer("❌ Google Sheets API не настроен. Создайте credentials.json для использования этой функции.")
+        return
+
+    await message.answer("📊 Загружаю сводку портфеля...")
+
+    loop = asyncio.get_event_loop()
+
+    # Получаем данные параллельно
+    spot_positions = await loop.run_in_executor(None, get_spot_positions_with_rows)
+    prices_data = await loop.run_in_executor(None, fetch_all_prices)
+    trade_stats = await loop.run_in_executor(None, get_trade_statistics)
+
+    if not spot_positions:
+        await message.answer("📭 Портфель пуст")
+        return
+
+    # Рассчитываем метрики для каждой позиции
+    positions_with_pnl = []
+    total_invested = 0.0
+    total_current_value = 0.0
+
+    for pos in spot_positions:
+        ticker = pos['ticker']
+        quantity = pos['quantity']
+        entry_price = pos['entry_price']
+
+        if entry_price <= 0 or quantity <= 0:
+            continue
+
+        coin_id = COIN_MAP.get(ticker)
+        if not coin_id or coin_id not in prices_data:
+            continue
+
+        current_price = prices_data[coin_id].get("usd", 0)
+        if current_price <= 0:
+            continue
+
+        position_cost = entry_price * quantity
+        current_value = current_price * quantity
+        unrealized_pnl = current_value - position_cost
+        pnl_pct = (unrealized_pnl / position_cost * 100) if position_cost > 0 else 0
+
+        total_invested += position_cost
+        total_current_value += current_value
+
+        positions_with_pnl.append({
+            "ticker": ticker,
+            "pnl_usd": unrealized_pnl,
+            "pnl_pct": pnl_pct,
+            "current_value": current_value
+        })
+
+    # Общий unrealized PnL
+    unrealized_pnl = total_current_value - total_invested
+    unrealized_pnl_pct = (unrealized_pnl / total_invested * 100) if total_invested > 0 else 0
+
+    # Realized profit
+    realized_profit = trade_stats["total_profit"]
+
+    # Total profit
+    total_profit = realized_profit + unrealized_pnl
+
+    # Находим Best/Worst performers
+    if positions_with_pnl:
+        best_performer = max(positions_with_pnl, key=lambda x: x["pnl_pct"])
+        worst_performer = min(positions_with_pnl, key=lambda x: x["pnl_pct"])
+    else:
+        best_performer = worst_performer = None
+
+    # Форматирование
+    total_value_str = f"${total_current_value:,.2f}"
+    unrealized_str = f"+${unrealized_pnl:.2f}" if unrealized_pnl >= 0 else f"-${abs(unrealized_pnl):.2f}"
+    unrealized_pct_str = f"+{unrealized_pnl_pct:.1f}%" if unrealized_pnl_pct >= 0 else f"{unrealized_pnl_pct:.1f}%"
+    realized_str = f"+${realized_profit:.2f}" if realized_profit >= 0 else f"-${abs(realized_profit):.2f}"
+    total_profit_str = f"+${total_profit:.2f}" if total_profit >= 0 else f"-${abs(total_profit):.2f}"
+
+    summary_text = (
+        f"📊 <b>СВОДКА ПОРТФЕЛЯ</b>\n\n"
+        f"💼 Общая стоимость: <b>{total_value_str}</b>\n"
+        f"📈 Unrealized PnL: <b>{unrealized_str}</b> ({unrealized_pct_str})\n"
+        f"💰 Realized Profit: <b>{realized_str}</b>\n"
+        f"🎯 Total Profit: <b>{total_profit_str}</b>\n\n"
+    )
+
+    if best_performer:
+        best_pnl_str = f"+{best_performer['pnl_pct']:.1f}%" if best_performer['pnl_pct'] >= 0 else f"{best_performer['pnl_pct']:.1f}%"
+        summary_text += f"🚀 Best: <b>{best_performer['ticker']}</b> ({best_pnl_str})\n"
+
+    if worst_performer:
+        worst_pnl_str = f"+{worst_performer['pnl_pct']:.1f}%" if worst_performer['pnl_pct'] >= 0 else f"{worst_performer['pnl_pct']:.1f}%"
+        summary_text += f"📉 Worst: <b>{worst_performer['ticker']}</b> ({worst_pnl_str})\n"
+
+    summary_text += f"\n🎲 Win Rate: <b>{trade_stats['win_rate']:.1f}%</b> ({trade_stats['winning_trades']}/{trade_stats['total_trades']})"
+
+    await message.answer(summary_text, parse_mode="HTML")
 
 @dp.message(Command("gems"))
 async def gems_cmd(message: Message):
@@ -2099,6 +2367,7 @@ def parse_ai_gems_response(ai_text, top_gems):
                         gem_data["market_cap"] = coin.get("market_cap", 0) / 1_000_000
                         gem_data["vol_mcap"] = coin.get("vol_mcap_ratio", 0) * 100
                         gem_data["circ_ratio"] = coin.get("circ_ratio", 0) * 100 if coin.get("circ_ratio") else 0
+                        gem_data["volume_24h"] = coin.get("total_volume", 0)  # Добавляем 24h volume
                         break
 
             # Проверяем что все обязательные поля заполнены
@@ -2138,6 +2407,7 @@ def format_gem_message(index, gem):
     mcap = gem.get("market_cap", 0)
     vol_mcap = gem.get("vol_mcap", 0)
     circ = gem.get("circ_ratio", 0)
+    volume_24h = gem.get("volume_24h", 0)  # Добавляем 24h volume
 
     entry_from = gem.get("entry_from", 0)
     entry_to = gem.get("entry_to", 0)
@@ -2166,9 +2436,13 @@ def format_gem_message(index, gem):
     tp2_str = format_price(tp2)
     tp3_str = format_price(tp3)
 
+    # Форматируем volume
+    volume_str = f"${volume_24h/1_000_000:.1f}M" if volume_24h >= 1_000_000 else f"${volume_24h/1_000:.0f}K"
+
     text = f"""🔥 <b>{index}. [{gem.get('sector', 'Crypto')}] {gem.get('name', 'Unknown')} (${gem.get('ticker', '')})</b>
 
-💵 Текущая: <b>${price_str}</b> | Капа: ${mcap:.0f}M | Vol/MCap: {vol_mcap:.0f}%
+💵 Текущая: <b>${price_str}</b> | Капа: ${mcap:.0f}M
+📊 24h Volume: <b>{volume_str}</b> | Vol/MCap: {vol_mcap:.0f}%
 🛡 Токеномика: В рынке {circ:.0f}% | Разлоки: Чисто на 45+ дней
 💡 Драйвер: {gem.get('driver', 'Нет данных')}
 

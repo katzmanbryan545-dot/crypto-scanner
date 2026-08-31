@@ -1244,16 +1244,25 @@ async def get_market_pulse_text():
             season_status = "₿ BTC сезон"
         pulse_text += f"🔸 Altcoin Season Index: <b>{alt_season}/100</b> ({season_status})\n"
 
-    # Funding Rate
+    # Funding Rate с динамическим статусом
     if btc_funding is not None:
         funding_sign = "+" if btc_funding >= 0 else ""
-        if btc_funding > 0.03:
-            funding_status = "Перегрев лонгами — риск сквиза вниз"
-        elif btc_funding < -0.01:
-            funding_status = "Преобладают шорты — потенциал шорт-сквиза вверх"
-        else:
+
+        # Определяем эмодзи и статус по уровням
+        if btc_funding >= 0.03:
+            funding_emoji = "🔴"
+            funding_status = "Критический перегрев лонгами"
+        elif 0.01 < btc_funding < 0.03:
+            funding_emoji = "🟡"
+            funding_status = "Умеренный бычий оптимизм"
+        elif 0.00 <= btc_funding <= 0.01:
+            funding_emoji = "🟢"
             funding_status = "Нейтрально"
-        pulse_text += f"🔸 Funding Rate (BTC): <b>{funding_sign}{btc_funding:.4f}%</b> ({funding_status})\n"
+        else:  # funding < 0.00
+            funding_emoji = "🟣"
+            funding_status = "Перекос в шорты / Риск Short Squeeze"
+
+        pulse_text += f"🔸 Funding Rate (BTC): <b>{funding_sign}{btc_funding:.4f}%</b> {funding_emoji} ({funding_status})\n"
 
     # Трейдерский вердикт (объединяем сигнал и анализ)
     pulse_text += "\n💡 <b>Трейдерский вердикт:</b>\n"
@@ -1296,6 +1305,13 @@ async def get_market_pulse_text():
             pulse_text += f"при низкой доминации BTC ({btc_dom:.1f}%). "
             pulse_text += "Полноценный альтсезон! Деньги активно идут в альткоины."
 
+        # Предупреждение на основе экстремального фандинга
+        if btc_funding is not None:
+            if btc_funding >= 0.03:
+                pulse_text += "\n\n⚠️ <b>Внимание:</b> сильный перегрев рынка лонгами. Повышенная вероятность сквиза вниз для выноса плечей."
+            elif btc_funding < 0.00:
+                pulse_text += "\n\n⚡️ <b>Внимание:</b> доминируют агрессивные шорты. Высокий потенциал резкого шорт-сквиза вверх."
+
         # Парадокс Fear & Greed
         if (fear_value > 60 and cap_change < -3) or (fear_value < 40 and cap_change > 3):
             pulse_text += "\n\n⚠️ <b>Парадокс:</b> "
@@ -1312,15 +1328,24 @@ async def get_market_pulse_text():
         if cap_change < -3:
             pulse_text += "• ⏸️ Воздержаться от импульсивных лонгов по альтам\n"
             pulse_text += "• 👀 Ждать разворота Total MCap (+1.5-2%) и падения доминации BTC &lt; 55%\n"
-            pulse_text += "• 📋 Подготовить пул сильных монет в Alpha-Радаре под отскок"
+            pulse_text += "• 📋 Подготовить пул сильных монет в Alpha-Радаре под отскок\n"
+            # Дополнение на основе фандинга
+            if btc_funding is not None and btc_funding >= 0.03:
+                pulse_text += "• 🚨 Экстремальный фандинг — не открывать новые лонги с плечом"
         elif cap_change < 0:
             pulse_text += "• ⏸️ Коррекция — можно переждать\n"
             pulse_text += "• 👀 Следить за Total Market Cap: разворот на +2% = сигнал к входу\n"
-            pulse_text += "• 💰 Готовить список монет для покупки"
+            pulse_text += "• 💰 Готовить список монет для покупки\n"
+            # Дополнение на основе фандинга
+            if btc_funding is not None and btc_funding < 0.00:
+                pulse_text += "• ⚡ Негативный фандинг — возможен резкий шорт-сквиз при развороте"
         elif cap_change > 3 and btc_dom < 50:
             pulse_text += "• 🚀 Сильный рост + низкая BTC доминация = альтсезон!\n"
             pulse_text += "• ✅ Можно докупать качественные альты\n"
-            pulse_text += "• ⚠️ Следить за перегревом (Fear &amp; Greed &gt; 80)"
+            pulse_text += "• ⚠️ Следить за перегревом (Fear &amp; Greed &gt; 80)\n"
+            # Дополнение на основе фандинга
+            if btc_funding is not None and btc_funding >= 0.03:
+                pulse_text += "• 🚨 Осторожно: критический фандинг — риск резкой коррекции"
         else:
             pulse_text += "• 📊 Рынок в нормальном состоянии\n"
             pulse_text += "• ✅ Можно входить в позиции постепенно\n"

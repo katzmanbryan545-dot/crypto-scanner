@@ -140,15 +140,27 @@ dp.callback_query.middleware(AuthMiddleware())
 def init_gspread():
     """Инициализация gspread клиента"""
     try:
-        # Проверяем наличие credentials.json
-        if os.path.exists("credentials.json"):
-            scope = ['https://spreadsheets.google.com/feeds',
-                     'https://www.googleapis.com/auth/drive']
+        scope = ['https://spreadsheets.google.com/feeds',
+                 'https://www.googleapis.com/auth/drive']
+
+        # Попытка загрузить credentials из переменной окружения (для HF Space)
+        google_creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        if google_creds_json:
+            print("Loading Google credentials from environment variable...")
+            import json
+            creds_dict = json.loads(google_creds_json)
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+            client = gspread.authorize(creds)
+            return client
+
+        # Fallback: проверяем наличие credentials.json (для локальной разработки)
+        elif os.path.exists("credentials.json"):
+            print("Loading Google credentials from credentials.json file...")
             creds = Credentials.from_service_account_file('credentials.json', scopes=scope)
             client = gspread.authorize(creds)
             return client
         else:
-            print("WARNING: credentials.json not found. Add asset function will be unavailable.")
+            print("WARNING: credentials.json not found and GOOGLE_CREDENTIALS_JSON not set. Add asset function will be unavailable.")
             return None
     except Exception as e:
         print(f"WARNING: Error initializing gspread: {e}")

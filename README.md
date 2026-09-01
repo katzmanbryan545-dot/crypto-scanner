@@ -7,6 +7,7 @@ sdk: gradio
 sdk_version: "5.9.1"
 app_file: app.py
 pinned: false
+license: mit
 ---
 
 # 🚀 Crypto Terminal Bot
@@ -47,4 +48,4 @@ Set these environment variables in Space Settings → Repository secrets:
 - **Search**: Tavily API
 - **Data**: Google Sheets, CoinGecko API
 - **Scheduler**: APScheduler
-- **Interface**: Gradio 5.x
+- **Web Server**: Python HTTP Server

@@ -1,10 +1,10 @@
 import os
-import subprocess
 import sys
+import subprocess
 import time
-import gradio as gr
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Проверка наличия обязательных переменных окружения
+# Проверка переменных окружения
 required_vars = ["TELEGRAM_TOKEN", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "GOOGLE_SHEETS_ID", "MY_TELEGRAM_ID"]
 missing_vars = [var for var in required_vars if not os.getenv(var)]
 
@@ -12,18 +12,19 @@ bot_process = None
 bot_status = "⏳ Starting..."
 
 if missing_vars:
-    bot_status = f"❌ Missing variables: {', '.join(missing_vars)}"
+    bot_status = f"❌ Missing: {', '.join(missing_vars)}"
     print(f"ERROR: {bot_status}", file=sys.stderr)
+    print("Configure secrets in Settings → Repository secrets on HF Space", file=sys.stderr)
 else:
+    print("✅ All environment variables found. Starting bot...")
     try:
-        print("✅ All environment variables found. Starting Telegram bot...")
         bot_process = subprocess.Popen(
             [sys.executable, "main.py"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
         )
-        time.sleep(3)  # Даем боту время на запуск
+        time.sleep(2)
 
         if bot_process.poll() is None:
             bot_status = "✅ Running"
@@ -33,48 +34,62 @@ else:
             print("Bot process terminated", file=sys.stderr)
     except Exception as e:
         bot_status = f"❌ Error: {e}"
-        print(f"ERROR starting bot: {e}", file=sys.stderr)
+        print(f"ERROR: {e}", file=sys.stderr)
 
-# Создаем простой интерфейс
-with gr.Blocks(title="Crypto Scanner Bot") as demo:
-    gr.Markdown("# 🚀 Crypto Scanner Bot")
-    gr.Markdown(f"## Bot Status: {bot_status}")
+# Простой HTTP сервер для healthcheck
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/html')
+        self.end_headers()
 
-    if not missing_vars and bot_status == "✅ Running":
-        gr.Markdown("""
-        ### Active Features:
-        - 📊 Portfolio management with real-time P&L
-        - 💎 Alpha-Radar: AI gem discovery (ranks 101-400)
-        - 🫀 Market Pulse: Fear & Greed, Funding Rates
-        - 🔔 Volatility alerts for ±15% moves
-        - 📰 Daily digest at 09:00 UTC
-        - 🤖 Automated analysis every 15-30 min
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Crypto Scanner Bot</title>
+            <meta charset="utf-8">
+            <style>
+                body {{ font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; }}
+                h1 {{ color: #333; }}
+                .status {{ padding: 10px; border-radius: 5px; margin: 20px 0; }}
+                .running {{ background: #d4edda; color: #155724; }}
+                .error {{ background: #f8d7da; color: #721c24; }}
+            </style>
+        </head>
+        <body>
+            <h1>🚀 Crypto Scanner Bot</h1>
+            <div class="status {'running' if bot_status.startswith('✅') else 'error'}">
+                <strong>Status:</strong> {bot_status}
+            </div>
+            <h2>Features</h2>
+            <ul>
+                <li>📊 Portfolio management with P&L tracking</li>
+                <li>💎 Alpha-Radar gem discovery</li>
+                <li>🫀 Market Pulse analysis</li>
+                <li>🔔 Volatility alerts</li>
+                <li>📰 Daily digest at 09:00 UTC</li>
+            </ul>
+            <h2>Bot Commands</h2>
+            <ul>
+                <li><code>/summary</code> - Portfolio overview</li>
+                <li><code>/pulse</code> - Market pulse</li>
+                <li><code>/gems</code> - Alpha-Radar scanner</li>
+                <li><code>/alerts</code> - Alert history</li>
+                <li><code>/pnl</code> - Profit & Loss stats</li>
+            </ul>
+            {'<p><strong>⚠️ Configure environment variables in Space Settings → Repository secrets</strong></p>' if missing_vars else ''}
+        </body>
+        </html>
+        """
+        self.wfile.write(html.encode())
 
-        ### Bot Commands:
-        - `/summary` - Portfolio overview
-        - `/pulse` - Market pulse with funding rate
-        - `/gems` - Alpha-Radar gem scanner
-        - `/alerts` - Volatility alert history
-        - `/pnl` - Profit & Loss statistics
+    def log_message(self, format, *args):
+        pass  # Отключаем логи запросов
 
-        **This bot is running in the background via Telegram.**
-        """)
-    elif missing_vars:
-        gr.Markdown(f"""
-        ### ⚠️ Configuration Required
+# Запуск сервера на порту 7860
+print(f"Starting HTTP server on port 7860...")
+print(f"Bot status: {bot_status}")
 
-        Please add these environment variables in **Settings → Repository secrets**:
-
-        {chr(10).join(f'- `{var}`' for var in missing_vars)}
-
-        Then restart the Space.
-        """)
-    else:
-        gr.Markdown("### ⚠️ Bot failed to start. Check logs for details.")
-
-# Запуск с минимальными параметрами
-demo.launch(
-    server_name="0.0.0.0",
-    server_port=7860,
-    show_error=True
-)
+httpd = HTTPServer(('0.0.0.0', 7860), HealthCheckHandler)
+httpd.serve_forever()

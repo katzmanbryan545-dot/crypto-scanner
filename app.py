@@ -3,6 +3,13 @@ import sys
 import subprocess
 import time
 
+# Импорт spaces для HF Space совместимости
+try:
+    import spaces
+    HAS_SPACES = True
+except ImportError:
+    HAS_SPACES = False
+
 # Проверка переменных окружения
 required_vars = ["TELEGRAM_TOKEN", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "GOOGLE_SHEETS_ID", "MY_TELEGRAM_ID"]
 missing_vars = [var for var in required_vars if not os.getenv(var)]
@@ -10,11 +17,17 @@ missing_vars = [var for var in required_vars if not os.getenv(var)]
 bot_process = None
 bot_status = "⏳ Starting..."
 
-if missing_vars:
-    bot_status = f"❌ Missing: {', '.join(missing_vars)}"
-    print(f"ERROR: {bot_status}", file=sys.stderr)
-    print("Configure secrets in Settings → Repository secrets", file=sys.stderr)
-else:
+@spaces.GPU(duration=120) if HAS_SPACES else lambda x: x
+def start_bot():
+    """Функция запуска бота с GPU декоратором для HF Space"""
+    global bot_process, bot_status
+
+    if missing_vars:
+        bot_status = f"❌ Missing: {', '.join(missing_vars)}"
+        print(f"ERROR: {bot_status}", file=sys.stderr)
+        print("Configure secrets in Settings → Repository secrets", file=sys.stderr)
+        return bot_status
+
     print("✅ All environment variables found. Starting bot...")
     try:
         bot_process = subprocess.Popen(
@@ -35,6 +48,11 @@ else:
     except Exception as e:
         bot_status = f"❌ Error: {e}"
         print(f"ERROR: {e}", file=sys.stderr)
+
+    return bot_status
+
+# Запускаем бота
+start_bot()
 
 # Используем Gradio для совместимости с HF Space
 try:

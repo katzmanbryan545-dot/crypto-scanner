@@ -3,7 +3,9 @@ title: Crypto Scanner
 emoji: 🚀
 colorFrom: blue
 colorTo: indigo
-sdk: docker
+sdk: gradio
+sdk_version: "4.44.0"
+app_file: app.py
 pinned: false
 ---
 
@@ -45,4 +47,4 @@ Set these environment variables in Space Settings → Repository secrets:
 - **Search**: Tavily API
 - **Data**: Google Sheets, CoinGecko API
 - **Scheduler**: APScheduler
-- **Deployment**: Docker on Hugging Face Spaces
+- **Interface**: Gradio 4.44.0

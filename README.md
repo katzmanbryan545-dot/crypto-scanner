@@ -1,119 +1,50 @@
-# Crypto Bot - Документация
+---
+title: Crypto Terminal Bot
+emoji: 🚀
+colorFrom: blue
+colorTo: purple
+sdk: gradio
+sdk_version: 4.44.0
+app_file: app.py
+pinned: false
+---
 
-## Описание
-Telegram-бот для мониторинга криптовалютного портфолио с автоматическими алертами волатильности и утренним дайджестом новостей.
+# 🚀 Crypto Terminal Bot
 
-## Возможности
+24/7 Telegram bot for cryptocurrency portfolio management and market analysis.
 
-### 1. Утренний дайджест (09:00 UTC)
-- Автоматическая проверка текущих цен монет из Google Таблицы
-- Расчет ROI относительно цены покупки
-- Поиск критических новостей через Tavily API
-- Анализ новостей через OpenAI GPT-4o-mini
-- Фильтрация по важным событиям: Claim, Airdrop, Snapshot, TGE, Mainnet
+## Features
 
-### 2. Алерты волатильности (каждые 15 минут)
-- Автоматическая проверка изменений цен за 24 часа
-- Алерт при |изменение| ≥ 15%
-- Защита от спама: повторный алерт не чаще 1 раза в 6 часов
-- Отправка только админу (MY_TELEGRAM_ID)
+- 📊 **Portfolio Management**: Track positions with real-time P&L
+- 💎 **Alpha-Radar**: AI-powered gem discovery (ranks 101-400)
+- 🫀 **Market Pulse**: Fear & Greed Index, Funding Rates, BTC Dominance
+- 🔔 **Volatility Alerts**: Automatic notifications for ±15% moves
+- 📰 **Daily Digest**: Morning market summary at 09:00
+- 🤖 **Automated Analysis**: Market trend monitoring every 15-30 min
 
-### 3. Команды
-- `/start` - Запуск бота и проверка доступа
-- `/check` - Ручной запуск аудита портфолио
+## Bot Commands
 
-## Установка
+- `/summary` - Quick portfolio overview
+- `/pulse` - Market pulse with funding rate
+- `/gems` - Alpha-Radar gem scanner
+- `/alerts` - Volatility alert history
+- `/pnl` - Profit & Loss statistics
 
-### 1. Установка зависимостей
-```bash
-pip install -r requirements.txt
-```
+## Configuration
 
-### 2. Настройка переменных окружения
-Скопируйте `.env.example` в `.env` и заполните:
+Set these environment variables in Space Settings → Repository secrets:
 
-```bash
-TELEGRAM_TOKEN=your_token          # Токен от @BotFather
-MY_TELEGRAM_ID=123456789          # Ваш Telegram ID
-GOOGLE_SHEETS_ID=your_sheet_id    # ID Google Таблицы
-OPENAI_API_KEY=sk-...             # OpenAI API ключ
-TAVILY_API_KEY=tvly-...           # Tavily API ключ
-```
+- `TELEGRAM_TOKEN` - Your Telegram bot token
+- `OPENROUTER_API_KEY` - OpenRouter API key
+- `TAVILY_API_KEY` - Tavily search API key
+- `GOOGLE_SHEETS_ID` - Google Sheets ID for portfolio data
+- `MY_TELEGRAM_ID` - Your Telegram user ID
 
-### 3. Формат Google Таблицы
-Таблица должна содержать минимум 4 колонки:
-- Колонка A (индекс 0): Название монеты (например: bitcoin, ethereum)
-- Колонка D (индекс 3): Цена покупки (опционально, для расчета ROI)
+## Tech Stack
 
-Пример:
-| Монета    | ... | ... | Цена покупки |
-|-----------|-----|-----|--------------|
-| bitcoin   | ... | ... | 45000        |
-| ethereum  | ... | ... | 2500         |
-
-### 4. Запуск
-```bash
-python main.py
-```
-
-Или в фоновом режиме (Linux/Mac):
-```bash
-nohup python main.py > bot.log 2>&1 &
-```
-
-Windows (PowerShell):
-```powershell
-Start-Process python -ArgumentList "main.py" -WindowStyle Hidden
-```
-
-## Архитектура
-
-### Асинхронность
-- Все синхронные API вызовы (requests, OpenAI) обернуты в `loop.run_in_executor`
-- Не блокирует event loop aiogram
-- Поддержка параллельной обработки запросов
-
-### Кэширование алертов
-- In-memory хранилище: `{coin_name: last_alert_timestamp}`
-- Автоматическая очистка при рестарте (можно доработать персистентным хранилищем)
-
-### Планировщик задач
-- `AsyncIOScheduler` от APScheduler
-- Cron-задача для дайджеста: 09:00 UTC
-- Interval-задача для алертов: каждые 15 минут
-
-## Безопасность
-- Все чувствительные данные только через переменные окружения
-- Проверка доступа по MY_TELEGRAM_ID
-- Никаких хардкодов API ключей в коде
-
-## API Limits
-- CoinGecko: бесплатный тариф (~50 запросов/мин)
-- Tavily: проверьте лимиты вашего тарифа
-- OpenAI: расход токенов зависит от количества монет
-
-## Troubleshooting
-
-### Бот не отвечает
-- Проверьте правильность TELEGRAM_TOKEN
-- Убедитесь что бот запущен: `ps aux | grep python`
-
-### Алерты не приходят
-- Проверьте MY_TELEGRAM_ID (получить через @userinfobot)
-- Убедитесь что волатильность действительно ≥15%
-
-### Ошибки с Google Таблицей
-- Таблица должна быть доступна по ссылке (публичная или с доступом по ссылке)
-- Проверьте GOOGLE_SHEETS_ID в URL таблицы
-
-### OpenAI ошибки
-- Проверьте баланс аккаунта OpenAI
-- Убедитесь что OPENAI_API_KEY действителен
-- Модель gpt-4o-mini должна быть доступна
-
-## Дальнейшие улучшения
-- [ ] Персистентное хранилище для кэша алертов (Redis/SQLite)
-- [ ] Поддержка нескольких пользователей
-- [ ] Настраиваемые пороги волатильности
-- [ ] Web dashboard для мониторинга
-- [ ] Интеграция с другими биржами (Binance, Bybit)
+- **Bot Framework**: aiogram 3.13.1
+- **AI**: OpenRouter (DeepSeek Chat)
+- **Search**: Tavily API
+- **Data**: Google Sheets, CoinGecko API
+- **Scheduler**: APScheduler
+- **Interface**: Gradio 4.44.0

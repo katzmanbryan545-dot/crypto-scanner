@@ -828,36 +828,78 @@ def get_btc_price():
 
 @retry_on_failure(max_retries=3, delay=2, backoff=2)
 def get_top_coins_prices():
-    """Получает цены топ криптовалют (BTC, ETH, SOL, BNB)"""
+    """Получает цены топ криптовалют с Binance API (BTC, ETH, SOL, BNB)"""
     try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
-        params = {
-            "ids": "bitcoin,ethereum,solana,binancecoin",
-            "vs_currencies": "usd",
-            "include_24hr_change": "true"
-        }
-        response = requests.get(url, params=params, timeout=10).json()
-        return response
+        url = "https://api.binance.com/api/v3/ticker/24hr"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        # Маппинг тикеров Binance в формат CoinGecko для совместимости
+        symbols = {"BTCUSDT": "bitcoin", "ETHUSDT": "ethereum", "SOLUSDT": "solana", "BNBUSDT": "binancecoin"}
+        result = {}
+
+        for ticker in data:
+            symbol = ticker.get("symbol", "")
+            if symbol in symbols:
+                coin_id = symbols[symbol]
+                result[coin_id] = {
+                    "usd": float(ticker.get("lastPrice", 0)),
+                    "usd_24h_change": float(ticker.get("priceChangePercent", 0))
+                }
+
+        return result
     except Exception as e:
-        logger.error(f"Ошибка получения цен топ монет: {e}")
+        logger.error(f"Ошибка получения цен с Binance: {e}")
         return {}
 
 @retry_on_failure(max_retries=3, delay=2, backoff=2)
 def get_global_market_data():
-    """Получает глобальные рыночные данные"""
+    """Получает глобальные рыночные данные с CoinCap fallback"""
     try:
-        url = "https://api.coingecko.com/api/v3/global"
-        response = requests.get(url, timeout=10).json()
+        # Попытка 1: CoinGecko
+        try:
+            url = "https://api.coingecko.com/api/v3/global"
+            response = requests.get(url, timeout=10).json()
 
-        if "data" in response:
-            data = response["data"]
-            return {
-                "total_market_cap": data.get("total_market_cap", {}).get("usd", 0),
-                "total_market_cap_change_24h": data.get("market_cap_change_percentage_24h_usd", 0),
-                "btc_dominance": data.get("market_cap_percentage", {}).get("btc", 0),
-                "eth_dominance": data.get("market_cap_percentage", {}).get("eth", 0)
-            }
-        return None
+            if "data" in response:
+                data = response["data"]
+                return {
+                    "total_market_cap": data.get("total_market_cap", {}).get("usd", 0),
+                    "total_market_cap_change_24h": data.get("market_cap_change_percentage_24h_usd", 0),
+                    "btc_dominance": data.get("market_cap_percentage", {}).get("btc", 0),
+                    "eth_dominance": data.get("market_cap_percentage", {}).get("eth", 0)
+                }
+        except Exception as e:
+            logger.warning(f"CoinGecko global data недоступен: {e}. Переключаюсь на CoinCap...")
+
+        # Попытка 2: CoinCap fallback
+        url = "https://api.coincap.io/v2/assets"
+        params = {"limit": 10}
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json().get("data", [])
+
+        if not data:
+            return None
+
+        # Рассчитываем Total Market Cap и BTC Dominance из топ-10
+        total_cap = sum(float(coin.get("marketCapUsd", 0)) for coin in data)
+        btc_cap = next((float(coin.get("marketCapUsd", 0)) for coin in data if coin.get("symbol") == "BTC"), 0)
+        eth_cap = next((float(coin.get("marketCapUsd", 0)) for coin in data if coin.get("symbol") == "ETH"), 0)
+
+        # BTC change за 24h как приблизительная оценка рынка
+        btc_change = next((float(coin.get("changePercent24Hr", 0)) for coin in data if coin.get("symbol") == "BTC"), 0)
+
+        btc_dom = (btc_cap / total_cap * 100) if total_cap > 0 else 0
+        eth_dom = (eth_cap / total_cap * 100) if total_cap > 0 else 0
+
+        return {
+            "total_market_cap": total_cap,
+            "total_market_cap_change_24h": btc_change,  # Приближение
+            "btc_dominance": btc_dom,
+            "eth_dominance": eth_dom
+        }
     except Exception as e:
         logger.error(f"Ошибка получения глобальных данных: {e}")
         return None
@@ -1393,8 +1435,30 @@ def get_funding_rate(symbol="BTCUSDT"):
         logger.error(f"Ошибка получения Funding Rate для {symbol}: {e}")
         return None
 
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
+def get_weighted_funding_rate():
+    """Получает средневзвешенный фандинг для BTC, ETH, SOL"""
+    try:
+        symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+        funding_rates = []
+
+        for symbol in symbols:
+            rate = get_funding_rate(symbol)
+            if rate is not None:
+                funding_rates.append(rate)
+
+        if not funding_rates:
+            return None
+
+        # Средневзвешенное значение
+        weighted_avg = sum(funding_rates) / len(funding_rates)
+        return weighted_avg
+    except Exception as e:
+        logger.error(f"Ошибка расчета средневзвешенного фандинга: {e}")
+        return None
+
 async def get_market_pulse_text():
-    """Формирует расширенный текст рыночного пульса"""
+    """Формирует расширенный текст рыночного пульса с институциональным риск-менеджментом"""
     loop = asyncio.get_event_loop()
 
     # Получаем все данные параллельно
@@ -1403,10 +1467,13 @@ async def get_market_pulse_text():
     global_data = await loop.run_in_executor(None, get_global_market_data)
     alt_season = await loop.run_in_executor(None, get_altcoin_season_index)
     btc_funding = await loop.run_in_executor(None, get_funding_rate, "BTCUSDT")
-    eth_funding = await loop.run_in_executor(None, get_funding_rate, "ETHUSDT")
+    weighted_funding = await loop.run_in_executor(None, get_weighted_funding_rate)
 
     if not fng_data:
         return "🌡 <b>Рыночный пульс:</b> данные недоступны"
+
+    # Используем средневзвешенный фандинг если доступен
+    funding_rate = weighted_funding if weighted_funding is not None else btc_funding
 
     # Эмодзи для Fear & Greed
     status_emoji = {
@@ -1458,18 +1525,15 @@ async def get_market_pulse_text():
     pulse_text += "\n📊 <b>Рыночные индикаторы:</b>\n"
 
     if global_data:
-        # BTC Dominance
         btc_dom = global_data["btc_dominance"]
         pulse_text += f"🔸 BTC Dominance: <b>{btc_dom:.1f}%</b>\n"
 
-        # Total Market Cap
         total_cap = global_data["total_market_cap"]
         cap_change = global_data["total_market_cap_change_24h"]
         cap_trillion = total_cap / 1_000_000_000_000
         change_str = f"+{cap_change:.1f}%" if cap_change >= 0 else f"{cap_change:.1f}%"
         pulse_text += f"🔸 Total Market Cap: <b>${cap_trillion:.2f}T</b> ({change_str})\n"
 
-    # Altcoin Season Index
     if alt_season is not None:
         if alt_season >= 75:
             season_status = "🌊 Альтсезон!"
@@ -1481,91 +1545,102 @@ async def get_market_pulse_text():
             season_status = "₿ BTC сезон"
         pulse_text += f"🔸 Altcoin Season Index: <b>{alt_season}/100</b> ({season_status})\n"
 
-    # Funding Rate с динамическим статусом
-    if btc_funding is not None:
-        funding_sign = "+" if btc_funding >= 0 else ""
+    # Funding Rate
+    if funding_rate is not None:
+        funding_sign = "+" if funding_rate >= 0 else ""
 
-        # Определяем эмодзи и статус по уровням
-        if btc_funding >= 0.03:
+        if funding_rate >= 0.03:
             funding_emoji = "🔴"
-            funding_status = "Критический перегрев лонгами"
-        elif 0.01 < btc_funding < 0.03:
+            funding_status = "Критический перегрев"
+        elif 0.01 < funding_rate < 0.03:
             funding_emoji = "🟡"
             funding_status = "Умеренный бычий оптимизм"
-        elif 0.00 <= btc_funding <= 0.01:
+        elif 0.00 <= funding_rate <= 0.01:
             funding_emoji = "🟢"
             funding_status = "Нейтрально"
-        else:  # funding < 0.00
+        else:
             funding_emoji = "🟣"
-            funding_status = "Перекос в шорты / Риск Short Squeeze"
+            funding_status = "Перекос в шорты"
 
-        pulse_text += f"🔸 Funding Rate (BTC): <b>{funding_sign}{btc_funding:.4f}%</b> {funding_emoji} ({funding_status})\n"
+        pulse_text += f"🔸 Funding Rate (средневзв.): <b>{funding_sign}{funding_rate:.4f}%</b> {funding_emoji} ({funding_status})\n"
 
-    # AI-powered трейдерский вердикт
-    pulse_text += "\n💡 <b>Трейдерский вердикт:</b>\n"
+    # === ТРЕХУРОВНЕВАЯ ИЕРАРХИЯ РИСК-МЕНЕДЖМЕНТА ===
+    pulse_text += "\n💡 <b>ТРЕЙДЕРСКИЙ ВЕРДИКТ:</b>\n\n"
 
-    if global_data and fng_data:
+    if global_data and funding_rate is not None:
         cap_change = global_data["total_market_cap_change_24h"]
         btc_dom = global_data["btc_dominance"]
         fear_value = fng_data["value"]
 
-        # Генерируем вердикт через AI
-        try:
-            verdict_prompt = f"""Ты профессиональный крипто-трейдер. Проанализируй текущее состояние рынка и дай лаконичный вердикт (максимум 4-5 предложений) + конкретный план действий (3-4 пункта).
+        # УРОВЕНЬ 1: Критический перегрев лонгов (Funding >= +0.03%)
+        if funding_rate >= 0.03:
+            pulse_text += f"🚨 <b>КРИТИЧЕСКИЙ ПЕРЕГРЕВ ЛОНГОВ</b>\n\n"
+            pulse_text += f"Фандинг: <b>{funding_rate:+.4f}%</b>. Ставки финансирования экстремально высоки. "
+            pulse_text += f"Высокая вероятность каскада ликвидаций лонг-позиций и локального сброса открытого интереса (OI).\n\n"
+            pulse_text += f"🎯 <b>План действий:</b>\n"
+            pulse_text += f"• 🛑 Запрет на открытие новых лонг-позиций с кредитным плечом\n"
+            pulse_text += f"• 🔒 Подтянуть стоп-лоссы в безубыток, зафиксировать часть маржинальной прибыли\n"
+            pulse_text += f"• ⏳ Дождаться нормализации ставок финансирования до базовых значений (&lt;0.02%)"
+
+        # УРОВЕНЬ 2: Отрицательный фандинг (Funding < 0.00%)
+        elif funding_rate < 0.00:
+            pulse_text += f"🧲 <b>ОТРИЦАТЕЛЬНЫЙ ФАНДИНГ - ШОРТ-СКВИЗ СЕТАП</b>\n\n"
+            pulse_text += f"Фандинг: <b>{funding_rate:+.4f}%</b>. Рынок перегружен агрессивными шортами. "
+            pulse_text += f"Высокий потенциал импульсного шорт-сквиза с выносом продавцов вверх.\n\n"
+            pulse_text += f"🎯 <b>План действий:</b>\n"
+            pulse_text += f"• 🚫 Не продавать в рынок и не открывать шорты на импульсе падения\n"
+            pulse_text += f"• 🎯 Расставить сетку лимитных ордеров на съем локальной ликвидности снизу\n"
+            pulse_text += f"• ⚡ Держать готовность к быстрому импульсному отскоку"
+
+        # УРОВЕНЬ 3: Штатный режим (Funding 0.00% ... +0.03%)
+        else:
+            # Генерируем AI-вердикт для штатного режима
+            try:
+                verdict_prompt = f"""Ты профессиональный крипто-трейдер институционального уровня. Проанализируй текущее состояние рынка и дай точный вердикт с конкретным планом (максимум 5 предложений + 3 пункта плана).
 
 ТЕКУЩИЕ МЕТРИКИ:
-- Total Market Cap изменение за 24ч: {cap_change:+.2f}%
+- Total Market Cap 24h: {cap_change:+.2f}%
 - BTC Dominance: {btc_dom:.1f}%
-- Fear & Greed Index: {fear_value}/100 ({fng_data['classification']})
-- BTC Funding Rate: {btc_funding:+.4f}% {'(КРИТИЧЕСКИЙ ПЕРЕГРЕВ!)' if btc_funding and btc_funding >= 0.03 else '(негативный, риск Short Squeeze)' if btc_funding and btc_funding < 0.00 else '(нейтрально)'}
+- Fear & Greed: {fear_value}/100 ({fng_data['classification']})
+- Funding Rate: {funding_rate:+.4f}% (нейтральный)
 - Altcoin Season Index: {alt_season}/100
 
-ПРАВИЛА:
-1. Вердикт: сначала факт (рост/падение + доминация BTC), потом интерпретация, потом предупреждение если есть перегрев/парадокс
-2. План действий: конкретные шаги (не общие фразы). Если Funding Rate критический (≥0.03% или <0.00%) - это ПРИОРИТЕТ над остальным
-3. НЕ используй HTML теги <br>, <p>. Используй только <b>, <i>, <a href="">
-4. Пиши строго по делу, без воды
+ЗАДАЧА:
+1. Оцени динамику перетока ликвидности между BTC и альтами
+2. Определи фазу рынка: BTC-сезон (BTC dom >55%), Альтсезон (BTC dom <50%), или переходный период
+3. Выдай авторский трейдерский вывод без общих фраз
 
-Формат ответа:
-[2-3 предложения с вердиктом]
+ФОРМАТ ОТВЕТА (без тегов <br>, <p>):
+[2-3 предложения анализа ситуации]
 
 🎯 <b>План действий:</b>
-• [действие 1]
-• [действие 2]
-• [действие 3]"""
+• [конкретное действие 1]
+• [конкретное действие 2]
+• [конкретное действие 3]"""
 
-            ai_verdict = openai_client.chat.completions.create(
-                model="deepseek/deepseek-chat",
-                messages=[{"role": "user", "content": verdict_prompt}],
-                temperature=0.3,
-                max_tokens=500
-            )
+                ai_verdict = openai_client.chat.completions.create(
+                    model="deepseek/deepseek-chat",
+                    messages=[{"role": "user", "content": verdict_prompt}],
+                    temperature=0.3,
+                    max_tokens=500
+                )
 
-            verdict_text = ai_verdict.choices[0].message.content.strip()
-            # Очистка от запрещенных тегов
-            verdict_text = verdict_text.replace("<br>", "\n").replace("</br>", "").replace("<br/>", "\n")
-            verdict_text = verdict_text.replace("<p>", "").replace("</p>", "\n")
+                verdict_text = ai_verdict.choices[0].message.content.strip()
+                verdict_text = verdict_text.replace("<br>", "\n").replace("</br>", "").replace("<br/>", "\n")
+                verdict_text = verdict_text.replace("<p>", "").replace("</p>", "\n")
+                pulse_text += verdict_text
 
-            pulse_text += verdict_text
-
-        except Exception as e:
-            logger.error(f"Ошибка AI вердикта: {e}")
-            # Fallback на базовый анализ
-            pulse_text += f"Рынок: {cap_change:+.1f}% за 24ч, BTC dominance {btc_dom:.1f}%, Fear & Greed {fear_value}/100.\n\n"
-            pulse_text += "🎯 <b>План действий:</b>\n"
-
-            if btc_funding is not None and btc_funding >= 0.03:
-                pulse_text += "• 🛑 Подтянуть стопы, зафиксировать профит\n"
-                pulse_text += "• ❌ Запрет на новые лонги с плечом"
-            elif btc_funding is not None and btc_funding < 0.00:
-                pulse_text += "• 🟢 Искать точки входа в лонг\n"
-                pulse_text += "• ⚡️ Не шортить импульсивно"
-            elif cap_change < -3:
-                pulse_text += "• ⏸️ Воздержаться от лонгов по альтам\n"
-                pulse_text += "• 👀 Ждать разворота Total MCap"
-            else:
-                pulse_text += "• 📊 Рынок в норме\n"
-                pulse_text += "• ✅ Можно входить постепенно"
+            except Exception as e:
+                logger.error(f"Ошибка AI вердикта: {e}")
+                # Fallback
+                pulse_text += f"📊 <b>Штатный режим.</b> Market Cap {cap_change:+.1f}%, BTC dom {btc_dom:.1f}%, Funding нейтральный.\n\n"
+                pulse_text += f"🎯 <b>План действий:</b>\n"
+                if cap_change < -3:
+                    pulse_text += f"• ⏸️ Воздержаться от лонгов по альтам\n• 👀 Ждать разворота Total MCap\n• 📋 Готовить пул монет под отскок"
+                elif btc_dom > 55:
+                    pulse_text += f"• ₿ BTC-сезон: фокус на биткоин\n• ⚠️ Альты под давлением\n• 📊 Выборочный набор качественных L1/L2"
+                else:
+                    pulse_text += f"• 🌊 Деньги идут в альты\n• ✅ Докупать качественные активы\n• 🎯 Проверять /gems для новых возможностей"
 
     return pulse_text
 
@@ -2269,104 +2344,142 @@ async def summary_cmd(message: Message):
 
 @dp.message(Command("gems"))
 async def gems_cmd(message: Message):
-    """Команда Alpha-Радар - поиск перспективных гемов"""
+    """Команда Alpha-Радар - поиск перспективных гемов на основе Binance данных"""
 
-    await message.answer("💎 <b>ALPHA-РАДАР</b>\n\n🔍 Сканирую рынок монет вне топ-100...", parse_mode="HTML")
+    await message.answer("💎 <b>ALPHA-РАДАР</b>\n\n🔍 Сканирую рынок на Binance...", parse_mode="HTML")
 
     loop = asyncio.get_event_loop()
 
     try:
-        # Шаг 1: Загрузка кандидатов
+        # Шаг 1: Загрузка данных с Binance (надежно, без блокировок)
         candidates = await loop.run_in_executor(None, fetch_alpha_candidates)
 
         if not candidates:
-            await message.answer("❌ Не удалось загрузить данные с CoinGecko")
+            await message.answer("❌ Не удалось загрузить данные. Все источники недоступны.")
             return
 
-        await message.answer(f"✅ Загружено {len(candidates)} кандидатов. Применяю фильтры...")
+        await message.answer(f"✅ Загружено {len(candidates)} кандидатов. Применяю фильтры ликвидности...")
 
-        # Шаг 2: Фильтрация
-        filtered = await loop.run_in_executor(None, filter_alpha_gems, candidates)
+        # Шаг 2: Фильтрация по объему > $1.5M
+        filtered = [c for c in candidates if c.get("total_volume", 0) > 1_500_000]
 
         if not filtered:
-            await message.answer("❌ Ни одна монета не прошла фильтры")
+            await message.answer("❌ Ни одна монета не прошла фильтр ликвидности ($1.5M+)")
             return
 
-        await message.answer(f"✅ {len(filtered)} монет прошли фильтры. Анализирую через AI...")
+        # Сортируем по объему и берем топ-20 для дальнейшего анализа
+        filtered = sorted(filtered, key=lambda x: x.get("total_volume", 0), reverse=True)[:20]
 
-        # Шаг 3: Берём топ-5 по активности для анализа (уже делается внутри analyze_gems_with_ai)
+        await message.answer(f"✅ {len(filtered)} монет прошли фильтры. Анализирую топ-3 через AI...")
 
-        # Шаг 4: Анализ через AI с fallback
-        ai_result = await loop.run_in_executor(None, analyze_gems_with_ai, filtered)
+        # Шаг 3: Берём топ-3 по объему торгов
+        top_3 = filtered[:3]
 
-        if ai_result:
-            ai_analysis, top_gems = ai_result
-        else:
-            ai_analysis, top_gems = None, []
+        # Шаг 4: Генерируем AI-анализ для топ-3
+        gems = []
+        for coin in top_3:
+            try:
+                ticker = coin.get("symbol", "").upper()
+                price = coin.get("current_price", 0)
+                volume_24h = coin.get("total_volume", 0)
+                change_24h = coin.get("price_change_percentage_24h", 0)
 
-        # Fallback: если AI не сработал, формируем сигналы автоматически
-        if not ai_analysis:
-            await message.answer("⚠️ AI временно недоступен. Формирую сигналы автоматически на основе Volume/MCap...")
+                # Определяем сектор
+                sector = SECTOR_MAP.get(ticker, "Altcoin")
 
-            # Берем ТОП-3 по Volume/MCap
-            top_3 = sorted(filtered, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:3]
+                # Расчет уровней
+                entry_from = price * 0.97  # -3% от текущей
+                entry_to = price * 1.02    # +2%
+                stop_loss = price * 0.88   # -12%
+                tp1 = price * 1.35         # +35%
+                tp2 = price * 1.80         # +80%
 
-            gems = []
-            for idx, coin in enumerate(top_3, 1):
-                gem_plan = create_fallback_gem_plan(coin, idx)
-                if gem_plan:
-                    gems.append(gem_plan)
+                # Генерируем AI-комментарий
+                ai_prompt = f"""Ты профессиональный крипто-аналитик. Дай краткий (макс 2 предложения) трейдерский комментарий по монете.
 
-            if not gems:
-                await message.answer("❌ Не удалось сформировать сигналы")
-                return
-        else:
-            # Выводим сырой ответ AI для отладки
-            print("=" * 50)
-            print("ОТВЕТ AI:")
-            print(ai_analysis)
-            print("=" * 50)
+ДАННЫЕ:
+- Тикер: {ticker}
+- Сектор: {sector}
+- Цена: ${price:.6f}
+- Объем 24h: ${volume_24h:,.0f}
+- Изменение 24h: {change_24h:+.2f}%
 
-            # Шаг 5: Парсинг и форматирование результата
-            gems = parse_ai_gems_response(ai_analysis, top_gems)
+ЗАДАЧА: Объясни почему эта монета интересна. Укажи ключевой триггер входа (прорыв уровня, тренд, фундаментал).
+НЕ используй теги <br>, <p>. Максимум 2 предложения."""
 
-            if not gems:
-                await message.answer("⚠️ Ошибка парсинга AI. Использую автоматический режим...")
+                ai_response = openai_client.chat.completions.create(
+                    model="deepseek/deepseek-chat",
+                    messages=[{"role": "user", "content": ai_prompt}],
+                    temperature=0.4,
+                    max_tokens=200
+                )
 
-                # Fallback на автоматические сигналы
-                top_3 = sorted(filtered, key=lambda x: x.get("vol_mcap_ratio", 0), reverse=True)[:3]
-                gems = []
-                for idx, coin in enumerate(top_3, 1):
-                    gem_plan = create_fallback_gem_plan(coin, idx)
-                    if gem_plan:
-                        gems.append(gem_plan)
+                commentary = ai_response.choices[0].message.content.strip()
+                commentary = commentary.replace("<br>", " ").replace("</br>", "").replace("<p>", "").replace("</p>", "")
 
-                if not gems:
-                    await message.answer("❌ Не удалось сформировать сигналы")
-                    return
+                gems.append({
+                    "name": ticker,
+                    "ticker": ticker,
+                    "sector": sector,
+                    "price": price,
+                    "volume_24h": volume_24h,
+                    "change_24h": change_24h,
+                    "entry_from": entry_from,
+                    "entry_to": entry_to,
+                    "stop": stop_loss,
+                    "tp1": tp1,
+                    "tp2": tp2,
+                    "driver": commentary
+                })
 
-        # Шаг 6: Отправка результатов
-        await message.answer("💎 <b>ALPHA-РАДАР | ПОИСК АСИММЕТРИИ (GEMS)</b>\n", parse_mode="HTML")
+            except Exception as e:
+                logger.error(f"Ошибка анализа {coin.get('symbol')}: {e}")
+                # Fallback без AI
+                ticker = coin.get("symbol", "").upper()
+                price = coin.get("current_price", 0)
+                volume_24h = coin.get("total_volume", 0)
+                sector = SECTOR_MAP.get(ticker, "Altcoin")
+
+                gems.append({
+                    "name": ticker,
+                    "ticker": ticker,
+                    "sector": sector,
+                    "price": price,
+                    "volume_24h": volume_24h,
+                    "change_24h": coin.get("price_change_percentage_24h", 0),
+                    "entry_from": price * 0.97,
+                    "entry_to": price * 1.02,
+                    "stop": price * 0.88,
+                    "tp1": price * 1.35,
+                    "tp2": price * 1.80,
+                    "driver": f"Высокий объем торгов (${volume_24h:,.0f}), сектор: {sector}"
+                })
+
+        if not gems:
+            await message.answer("❌ Не удалось сформировать сигналы")
+            return
+
+        # Шаг 5: Отправка результатов
+        await message.answer("💎 <b>ALPHA-РАДАР | ТОП-3 АКТИВА ПО ЛИКВИДНОСТИ</b>\n", parse_mode="HTML")
 
         for idx, gem in enumerate(gems, 1):
             gem_text = format_gem_message(idx, gem)
-
-            # Кнопки под каждой карточкой
-            # Используем текущую цену вместо entry_from для упрощения callback_data
-            price_str = str(gem.get('price', 0))
-            tp_str = str(gem.get('tp2', 0))
 
             keyboard = InlineKeyboardMarkup(inline_keyboard=[
                 [
                     InlineKeyboardButton(
                         text="➕ Добавить в портфель",
-                        callback_data=f"addgem_{gem['ticker']}_{price_str}_{tp_str}"
+                        callback_data=f"addgem_{gem['ticker']}_{gem['price']:.6f}_{gem['tp2']:.6f}"
                     )
                 ],
                 [
                     InlineKeyboardButton(
                         text="📈 DexScreener",
                         url=f"https://dexscreener.com/search?q={gem['ticker']}"
+                    ),
+                    InlineKeyboardButton(
+                        text="📊 Binance",
+                        url=f"https://www.binance.com/en/trade/{gem['ticker']}_USDT"
                     )
                 ]
             ])
@@ -2376,7 +2489,7 @@ async def gems_cmd(message: Message):
 
     except Exception as e:
         await message.answer(f"❌ Ошибка выполнения Alpha-Радара: {str(e)}")
-        print(f"Ошибка в gems_cmd: {e}")
+        logger.error(f"Ошибка в gems_cmd: {e}")
 
 def parse_ai_gems_response(ai_text, top_gems):
     """Парсит ответ AI и извлекает данные по гемам"""
@@ -2499,35 +2612,73 @@ def format_price(price):
 
 def format_gem_message(index, gem):
     """Форматирует сообщение для одного гема"""
+    ticker = gem.get("ticker", "").upper()
+    name = gem.get("name", ticker)
+    sector = gem.get("sector", "Altcoin")
     price = gem.get("price", 0)
-    mcap = gem.get("market_cap", 0)
-    vol_mcap = gem.get("vol_mcap", 0)
-    circ = gem.get("circ_ratio", 0)
-    volume_24h = gem.get("volume_24h", 0)  # Добавляем 24h volume
+    volume_24h = gem.get("volume_24h", 0)
+    change_24h = gem.get("change_24h", 0)
 
     entry_from = gem.get("entry_from", 0)
     entry_to = gem.get("entry_to", 0)
     stop = gem.get("stop", 0)
     tp1 = gem.get("tp1", 0)
     tp2 = gem.get("tp2", 0)
-    tp3 = gem.get("tp3", 0)
+
+    driver = gem.get("driver", "Высокая ликвидность")
 
     # Рассчитываем проценты
     stop_pct = ((stop - price) / price * 100) if price > 0 else 0
     tp1_pct = ((tp1 - price) / price * 100) if price > 0 else 0
     tp2_pct = ((tp2 - price) / price * 100) if price > 0 else 0
-    tp3_pct = ((tp3 - price) / price * 100) if price > 0 else 0
 
     # Risk/Reward
     risk = abs(stop_pct)
     reward = tp2_pct
     rr = f"1:{reward/risk:.1f}" if risk > 0 else "N/A"
 
-    # Форматируем цены с умным округлением
+    # Форматируем цены
+    def format_price(p):
+        if p < 0.001:
+            return f"${p:.8f}"
+        elif p < 1:
+            return f"${p:.6f}"
+        elif p < 100:
+            return f"${p:.4f}"
+        else:
+            return f"${p:.2f}"
+
     price_str = format_price(price)
     entry_from_str = format_price(entry_from)
     entry_to_str = format_price(entry_to)
     stop_str = format_price(stop)
+    tp1_str = format_price(tp1)
+    tp2_str = format_price(tp2)
+
+    change_emoji = "🟢" if change_24h >= 0 else "🔴"
+    change_str = f"+{change_24h:.1f}%" if change_24h >= 0 else f"{change_24h:.1f}%"
+
+    text = f"""
+<b>#{index} {ticker}</b> | {sector}
+
+💰 <b>Текущая цена:</b> {price_str}
+📊 <b>Объем 24h:</b> ${volume_24h:,.0f}
+{change_emoji} <b>Изменение 24h:</b> {change_str}
+
+🎯 <b>ТОРГОВЫЙ ПЛАН:</b>
+
+<b>Вход:</b> {entry_from_str} - {entry_to_str}
+<b>Стоп:</b> {stop_str} ({stop_pct:.1f}%)
+<b>TP1:</b> {tp1_str} (+{tp1_pct:.0f}%)
+<b>TP2:</b> {tp2_str} (+{tp2_pct:.0f}%)
+
+<b>Risk/Reward:</b> {rr}
+
+💡 <b>Драйвер:</b>
+{driver}
+"""
+
+    return text.strip()
     tp1_str = format_price(tp1)
     tp2_str = format_price(tp2)
     tp3_str = format_price(tp3)

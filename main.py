@@ -21,8 +21,9 @@ from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Загрузка переменных окружения из .env файла
-load_dotenv()
+# Загрузка переменных окружения из .env файла (опционально для локальной разработки)
+# На Hugging Face Space переменные загружаются напрямую из системного окружения
+load_dotenv(override=False)  # override=False - не перезаписывает существующие системные переменные
 
 # Настройка логирования
 logging.basicConfig(

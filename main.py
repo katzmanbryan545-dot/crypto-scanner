@@ -848,9 +848,12 @@ def get_top_coins_prices():
                     "usd_24h_change": float(ticker.get("priceChangePercent", 0))
                 }
 
+        print(f"get_top_coins_prices: Загружено {len(result)} монет из Binance")
+        print(f"Результат: {result}")
         return result
     except Exception as e:
         logger.error(f"Ошибка получения цен с Binance: {e}")
+        print(f"ERROR in get_top_coins_prices: {e}")
         return {}
 
 @retry_on_failure(max_retries=3, delay=2, backoff=2)
@@ -1493,46 +1496,63 @@ async def get_market_pulse_text():
     # Основные активы
     pulse_text += "💎 <b>Основные активы:</b>\n"
 
-    if "bitcoin" in top_coins:
+    if top_coins and "bitcoin" in top_coins:
         btc = top_coins["bitcoin"]
         btc_price = btc.get("usd", 0)
         btc_change = btc.get("usd_24h_change", 0)
         change_str = f"+{btc_change:.1f}%" if btc_change >= 0 else f"{btc_change:.1f}%"
         pulse_text += f"₿ Bitcoin: <b>${btc_price:,.0f}</b> ({change_str})\n"
+    else:
+        pulse_text += "₿ Bitcoin: <i>данные недоступны</i>\n"
 
-    if "ethereum" in top_coins:
+    if top_coins and "ethereum" in top_coins:
         eth = top_coins["ethereum"]
         eth_price = eth.get("usd", 0)
         eth_change = eth.get("usd_24h_change", 0)
         change_str = f"+{eth_change:.1f}%" if eth_change >= 0 else f"{eth_change:.1f}%"
         pulse_text += f"Ξ Ethereum: <b>${eth_price:,.2f}</b> ({change_str})\n"
+    else:
+        pulse_text += "Ξ Ethereum: <i>данные недоступны</i>\n"
 
-    if "solana" in top_coins:
+    if top_coins and "solana" in top_coins:
         sol = top_coins["solana"]
         sol_price = sol.get("usd", 0)
         sol_change = sol.get("usd_24h_change", 0)
         change_str = f"+{sol_change:.1f}%" if sol_change >= 0 else f"{sol_change:.1f}%"
         pulse_text += f"◎ Solana: <b>${sol_price:.2f}</b> ({change_str})\n"
+    else:
+        pulse_text += "◎ Solana: <i>данные недоступны</i>\n"
 
-    if "binancecoin" in top_coins:
+    if top_coins and "binancecoin" in top_coins:
         bnb = top_coins["binancecoin"]
         bnb_price = bnb.get("usd", 0)
         bnb_change = bnb.get("usd_24h_change", 0)
         change_str = f"+{bnb_change:.1f}%" if bnb_change >= 0 else f"{bnb_change:.1f}%"
         pulse_text += f"🔶 BNB: <b>${bnb_price:.2f}</b> ({change_str})\n"
+    else:
+        pulse_text += "🔶 BNB: <i>данные недоступны</i>\n"
 
     # Рыночные индикаторы
     pulse_text += "\n📊 <b>Рыночные индикаторы:</b>\n"
 
     if global_data:
-        btc_dom = global_data["btc_dominance"]
-        pulse_text += f"🔸 BTC Dominance: <b>{btc_dom:.1f}%</b>\n"
+        btc_dom = global_data.get("btc_dominance", 0)
+        if btc_dom > 0:
+            pulse_text += f"🔸 BTC Dominance: <b>{btc_dom:.1f}%</b>\n"
+        else:
+            pulse_text += f"🔸 BTC Dominance: <i>данные недоступны</i>\n"
 
-        total_cap = global_data["total_market_cap"]
-        cap_change = global_data["total_market_cap_change_24h"]
-        cap_trillion = total_cap / 1_000_000_000_000
-        change_str = f"+{cap_change:.1f}%" if cap_change >= 0 else f"{cap_change:.1f}%"
-        pulse_text += f"🔸 Total Market Cap: <b>${cap_trillion:.2f}T</b> ({change_str})\n"
+        total_cap = global_data.get("total_market_cap", 0)
+        cap_change = global_data.get("total_market_cap_change_24h", 0)
+        if total_cap > 0:
+            cap_trillion = total_cap / 1_000_000_000_000
+            change_str = f"+{cap_change:.1f}%" if cap_change >= 0 else f"{cap_change:.1f}%"
+            pulse_text += f"🔸 Total Market Cap: <b>${cap_trillion:.2f}T</b> ({change_str})\n"
+        else:
+            pulse_text += f"🔸 Total Market Cap: <i>данные недоступны</i>\n"
+    else:
+        pulse_text += f"🔸 BTC Dominance: <i>данные недоступны</i>\n"
+        pulse_text += f"🔸 Total Market Cap: <i>данные недоступны</i>\n"
 
     if alt_season is not None:
         if alt_season >= 75:
@@ -1544,6 +1564,8 @@ async def get_market_pulse_text():
         else:
             season_status = "₿ BTC сезон"
         pulse_text += f"🔸 Altcoin Season Index: <b>{alt_season}/100</b> ({season_status})\n"
+    else:
+        pulse_text += f"🔸 Altcoin Season Index: <i>данные недоступны</i>\n"
 
     # Funding Rate
     if funding_rate is not None:
@@ -1563,17 +1585,23 @@ async def get_market_pulse_text():
             funding_status = "Перекос в шорты"
 
         pulse_text += f"🔸 Funding Rate (средневзв.): <b>{funding_sign}{funding_rate:.4f}%</b> {funding_emoji} ({funding_status})\n"
+    else:
+        pulse_text += f"🔸 Funding Rate: <i>данные недоступны</i>\n"
 
     # === ТРЕХУРОВНЕВАЯ ИЕРАРХИЯ РИСК-МЕНЕДЖМЕНТА ===
     pulse_text += "\n💡 <b>ТРЕЙДЕРСКИЙ ВЕРДИКТ:</b>\n\n"
 
-    if global_data and funding_rate is not None:
-        cap_change = global_data["total_market_cap_change_24h"]
-        btc_dom = global_data["btc_dominance"]
-        fear_value = fng_data["value"]
+    # Проверяем наличие критически важных данных
+    if not global_data or funding_rate is None:
+        pulse_text += "⚠️ <i>Недостаточно данных для формирования вердикта. Попробуйте позже.</i>"
+        return pulse_text
 
-        # УРОВЕНЬ 1: Критический перегрев лонгов (Funding >= +0.03%)
-        if funding_rate >= 0.03:
+    cap_change = global_data.get("total_market_cap_change_24h", 0)
+    btc_dom = global_data.get("btc_dominance", 0)
+    fear_value = fng_data.get("value", 50)
+
+    # УРОВЕНЬ 1: Критический перегрев лонгов (Funding >= +0.03%)
+    if funding_rate >= 0.03:
             pulse_text += f"🚨 <b>КРИТИЧЕСКИЙ ПЕРЕГРЕВ ЛОНГОВ</b>\n\n"
             pulse_text += f"Фандинг: <b>{funding_rate:+.4f}%</b>. Ставки финансирования экстремально высоки. "
             pulse_text += f"Высокая вероятность каскада ликвидаций лонг-позиций и локального сброса открытого интереса (OI).\n\n"

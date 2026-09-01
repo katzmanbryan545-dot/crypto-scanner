@@ -4,6 +4,24 @@ import subprocess
 import time
 import gradio as gr
 
+# Импорт spaces для совместимости с HF
+try:
+    import spaces
+except ImportError:
+    # Если spaces не установлен, создаем dummy декоратор
+    class spaces:
+        @staticmethod
+        def GPU(*args, **kwargs):
+            def decorator(func):
+                return func
+            return decorator
+
+# Dummy функция с @spaces.GPU для удовлетворения требований HF Space
+@spaces.GPU(duration=60)
+def dummy_gpu_function():
+    """Пустая функция для удовлетворения требования HF Space о наличии @spaces.GPU"""
+    return "GPU function detected"
+
 # Проверка переменных окружения
 required_vars = ["TELEGRAM_TOKEN", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "GOOGLE_SHEETS_ID", "MY_TELEGRAM_ID"]
 missing_vars = [var for var in required_vars if not os.getenv(var)]

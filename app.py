@@ -2,7 +2,6 @@ import os
 import sys
 import subprocess
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Проверка переменных окружения
 required_vars = ["TELEGRAM_TOKEN", "OPENROUTER_API_KEY", "TAVILY_API_KEY", "GOOGLE_SHEETS_ID", "MY_TELEGRAM_ID"]
@@ -14,7 +13,7 @@ bot_status = "⏳ Starting..."
 if missing_vars:
     bot_status = f"❌ Missing: {', '.join(missing_vars)}"
     print(f"ERROR: {bot_status}", file=sys.stderr)
-    print("Configure secrets in Settings → Repository secrets on HF Space", file=sys.stderr)
+    print("Configure secrets in Settings → Repository secrets", file=sys.stderr)
 else:
     print("✅ All environment variables found. Starting bot...")
     try:
@@ -24,72 +23,74 @@ else:
             stderr=subprocess.PIPE,
             text=True
         )
-        time.sleep(2)
+        time.sleep(3)
 
         if bot_process.poll() is None:
             bot_status = "✅ Running"
             print("Bot started successfully")
         else:
             bot_status = "❌ Failed to start"
-            print("Bot process terminated", file=sys.stderr)
+            stderr = bot_process.stderr.read() if bot_process.stderr else "No error output"
+            print(f"Bot process terminated: {stderr}", file=sys.stderr)
     except Exception as e:
         bot_status = f"❌ Error: {e}"
         print(f"ERROR: {e}", file=sys.stderr)
 
-# Простой HTTP сервер для healthcheck
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.end_headers()
+# Используем Gradio для совместимости с HF Space
+try:
+    import gradio as gr
 
-        html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Crypto Scanner Bot</title>
-            <meta charset="utf-8">
-            <style>
-                body {{ font-family: system-ui; max-width: 800px; margin: 50px auto; padding: 20px; }}
-                h1 {{ color: #333; }}
-                .status {{ padding: 10px; border-radius: 5px; margin: 20px 0; }}
-                .running {{ background: #d4edda; color: #155724; }}
-                .error {{ background: #f8d7da; color: #721c24; }}
-            </style>
-        </head>
-        <body>
-            <h1>🚀 Crypto Scanner Bot</h1>
-            <div class="status {'running' if bot_status.startswith('✅') else 'error'}">
-                <strong>Status:</strong> {bot_status}
-            </div>
-            <h2>Features</h2>
-            <ul>
-                <li>📊 Portfolio management with P&L tracking</li>
-                <li>💎 Alpha-Radar gem discovery</li>
-                <li>🫀 Market Pulse analysis</li>
-                <li>🔔 Volatility alerts</li>
-                <li>📰 Daily digest at 09:00 UTC</li>
-            </ul>
-            <h2>Bot Commands</h2>
-            <ul>
-                <li><code>/summary</code> - Portfolio overview</li>
-                <li><code>/pulse</code> - Market pulse</li>
-                <li><code>/gems</code> - Alpha-Radar scanner</li>
-                <li><code>/alerts</code> - Alert history</li>
-                <li><code>/pnl</code> - Profit & Loss stats</li>
-            </ul>
-            {'<p><strong>⚠️ Configure environment variables in Space Settings → Repository secrets</strong></p>' if missing_vars else ''}
-        </body>
-        </html>
-        """
-        self.wfile.write(html.encode())
+    with gr.Blocks(title="Crypto Scanner Bot") as demo:
+        gr.Markdown("# 🚀 Crypto Scanner Bot")
+        gr.Markdown(f"## Status: {bot_status}")
 
-    def log_message(self, format, *args):
-        pass  # Отключаем логи запросов
+        if not missing_vars and bot_status == "✅ Running":
+            gr.Markdown("""
+            ### Active Features:
+            - 📊 Portfolio management with real-time P&L
+            - 💎 Alpha-Radar: AI gem discovery (ranks 101-400)
+            - 🫀 Market Pulse: Fear & Greed Index, Funding Rates, BTC Dominance
+            - 🔔 Volatility alerts for ±15% moves
+            - 📰 Daily digest at 09:00 UTC
+            - 🤖 Automated analysis every 15-30 min
 
-# Запуск сервера на порту 7860
-print(f"Starting HTTP server on port 7860...")
-print(f"Bot status: {bot_status}")
+            ### Bot Commands:
+            - `/summary` - Portfolio overview
+            - `/pulse` - Market pulse with funding rate
+            - `/gems` - Alpha-Radar gem scanner
+            - `/alerts` - Volatility alert history
+            - `/pnl` - Profit & Loss statistics
 
-httpd = HTTPServer(('0.0.0.0', 7860), HealthCheckHandler)
-httpd.serve_forever()
+            **This bot is running in the background and accessible via Telegram.**
+            """)
+        elif missing_vars:
+            gr.Markdown(f"""
+            ### ⚠️ Configuration Required
+
+            Add these environment variables in **Settings → Repository secrets**:
+
+            {chr(10).join(f'- `{var}`' for var in missing_vars)}
+
+            Then click **Factory reboot**.
+            """)
+        else:
+            gr.Markdown("### ⚠️ Bot failed to start. Check logs for details.")
+
+    demo.launch(server_name="0.0.0.0", server_port=7860)
+
+except ImportError:
+    # Fallback если Gradio не установлен (не должно случиться на HF Space)
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            html = f"<html><body><h1>Crypto Scanner Bot</h1><p>Status: {bot_status}</p></body></html>"
+            self.wfile.write(html.encode())
+        def log_message(self, *args): pass
+
+    print("Gradio not found, using HTTP server")
+    httpd = HTTPServer(('0.0.0.0', 7860), Handler)
+    httpd.serve_forever()

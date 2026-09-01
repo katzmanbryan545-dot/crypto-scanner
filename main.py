@@ -903,32 +903,134 @@ def get_altcoin_season_index():
 
 # --- МОДУЛЬ ALPHA-РАДАР (ПОИСК ГЕМОВ) ---
 
-@retry_on_failure(max_retries=3, delay=2, backoff=2)
-def fetch_alpha_candidates():
-    """Загружает кандидатов из рангов 101-400 с CoinGecko"""
+@retry_on_failure(max_retries=2, delay=2, backoff=2)
+def fetch_alpha_candidates_binance():
+    """Загружает кандидатов с Binance API (fallback для CoinGecko)"""
+    try:
+        url = "https://api.binance.com/api/v3/ticker/24hr"
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        candidates = []
+        for ticker in data:
+            symbol = ticker.get("symbol", "")
+            # Берем только USDT пары
+            if not symbol.endswith("USDT"):
+                continue
+
+            base_symbol = symbol.replace("USDT", "")
+            price = float(ticker.get("lastPrice", 0))
+            volume = float(ticker.get("quoteVolume", 0))
+            change_24h = float(ticker.get("priceChangePercent", 0))
+
+            if price > 0 and volume > 0:
+                candidates.append({
+                    "id": base_symbol.lower(),
+                    "symbol": base_symbol,
+                    "name": base_symbol,
+                    "current_price": price,
+                    "total_volume": volume,
+                    "price_change_percentage_24h": change_24h,
+                    "market_cap": volume * price,  # Примерная оценка
+                    "circulating_supply": None,
+                    "total_supply": None
+                })
+
+        print(f"Загружено {len(candidates)} монет с Binance API")
+        return candidates
+    except Exception as e:
+        logger.error(f"Ошибка загрузки с Binance: {e}")
+        return []
+
+@retry_on_failure(max_retries=2, delay=2, backoff=2)
+def fetch_alpha_candidates_coincap():
+    """Загружает кандидатов с CoinCap API (второй fallback)"""
     try:
         candidates = []
+        # CoinCap возвращает топ 2000 монет
+        url = "https://api.coincap.io/v2/assets"
+        params = {"limit": 400}
 
-        # Загружаем страницы 2-4 (ранги 101-400, по 100 монет на страницу)
-        for page in range(2, 5):
-            url = "https://api.coingecko.com/api/v3/coins/markets"
-            params = {
-                "vs_currency": "usd",
-                "order": "market_cap_desc",
-                "per_page": 100,
-                "page": page,
-                "sparkline": "false"
-            }
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json().get("data", [])
 
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
+        for coin in data:
+            try:
+                price = float(coin.get("priceUsd", 0))
+                volume = float(coin.get("volumeUsd24Hr", 0))
+                market_cap = float(coin.get("marketCapUsd", 0))
+                change_24h = float(coin.get("changePercent24Hr", 0))
+                supply = float(coin.get("supply", 0))
+                max_supply = coin.get("maxSupply")
 
-            candidates.extend(data)
-            print(f"Загружено {len(data)} монет со страницы {page}")
+                if price > 0 and market_cap > 0:
+                    candidates.append({
+                        "id": coin.get("id", "").lower(),
+                        "symbol": coin.get("symbol", "").upper(),
+                        "name": coin.get("name", ""),
+                        "current_price": price,
+                        "total_volume": volume,
+                        "market_cap": market_cap,
+                        "price_change_percentage_24h": change_24h,
+                        "circulating_supply": supply,
+                        "total_supply": float(max_supply) if max_supply else None
+                    })
+            except (ValueError, TypeError):
+                continue
 
-        print(f"Всего загружено кандидатов: {len(candidates)}")
+        print(f"Загружено {len(candidates)} монет с CoinCap API")
         return candidates
+    except Exception as e:
+        logger.error(f"Ошибка загрузки с CoinCap: {e}")
+        return []
+
+@retry_on_failure(max_retries=3, delay=2, backoff=2)
+def fetch_alpha_candidates():
+    """Загружает кандидатов с множественными источниками (CoinGecko -> Binance -> CoinCap)"""
+    try:
+        # Попытка 1: CoinGecko (лучшие данные)
+        candidates = []
+
+        try:
+            for page in range(2, 5):
+                url = "https://api.coingecko.com/api/v3/coins/markets"
+                params = {
+                    "vs_currency": "usd",
+                    "order": "market_cap_desc",
+                    "per_page": 100,
+                    "page": page,
+                    "sparkline": "false"
+                }
+
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+
+                candidates.extend(data)
+                print(f"Загружено {len(data)} монет со страницы {page} (CoinGecko)")
+
+            if candidates:
+                print(f"Всего загружено кандидатов с CoinGecko: {len(candidates)}")
+                return candidates
+        except Exception as e:
+            print(f"CoinGecko недоступен: {e}. Переключаюсь на Binance...")
+
+        # Попытка 2: Binance (резервный источник)
+        candidates = fetch_alpha_candidates_binance()
+        if candidates:
+            return candidates
+
+        # Попытка 3: CoinCap (последний резервный)
+        print("Binance недоступен. Переключаюсь на CoinCap...")
+        candidates = fetch_alpha_candidates_coincap()
+        if candidates:
+            return candidates
+
+        # Если все источники недоступны
+        logger.error("Все источники данных недоступны (CoinGecko, Binance, CoinCap)")
+        return []
 
     except Exception as e:
         logger.error(f"Ошибка загрузки кандидатов: {e}")
@@ -1399,7 +1501,7 @@ async def get_market_pulse_text():
 
         pulse_text += f"🔸 Funding Rate (BTC): <b>{funding_sign}{btc_funding:.4f}%</b> {funding_emoji} ({funding_status})\n"
 
-    # Трейдерский вердикт (объединяем сигнал и анализ)
+    # AI-powered трейдерский вердикт
     pulse_text += "\n💡 <b>Трейдерский вердикт:</b>\n"
 
     if global_data and fng_data:
@@ -1407,86 +1509,63 @@ async def get_market_pulse_text():
         btc_dom = global_data["btc_dominance"]
         fear_value = fng_data["value"]
 
-        # Формируем краткий, емкий анализ без дублирования
-        if cap_change < -4:
-            pulse_text += f"Сильное падение рынка ({cap_change:.1f}%). "
-        elif cap_change < -2:
-            pulse_text += f"Локальная коррекция ({cap_change:.1f}%) "
-        elif cap_change < 0:
-            pulse_text += f"Легкая просадка ({cap_change:.1f}%). "
-        elif cap_change < 2:
-            pulse_text += f"Умеренный рост (+{cap_change:.1f}%). "
-        elif cap_change < 5:
-            pulse_text += f"Сильный рост (+{cap_change:.1f}%). "
-        else:
-            pulse_text += f"Мощный памп (+{cap_change:.1f}%)! "
+        # Генерируем вердикт через AI
+        try:
+            verdict_prompt = f"""Ты профессиональный крипто-трейдер. Проанализируй текущее состояние рынка и дай лаконичный вердикт (максимум 4-5 предложений) + конкретный план действий (3-4 пункта).
 
-        # Анализ доминации (без повторов)
-        if btc_dom > 60:
-            pulse_text += f"при очень высокой доминации BTC ({btc_dom:.1f}%). "
-            pulse_text += "Ликвидность массово удерживается в биткоине, альткоины под сильным давлением. "
-            pulse_text += "Агрессивный набор альтов преждевременен."
-        elif btc_dom > 55:
-            pulse_text += f"при высокой доминации BTC ({btc_dom:.1f}%). "
-            pulse_text += "Ликвидность удерживается в биткоине, альткоины под давлением. "
-            pulse_text += "Агрессивный набор альтов преждевременен."
-        elif btc_dom > 45:
-            pulse_text += f"при нормальной доминации BTC ({btc_dom:.1f}%). "
-            pulse_text += "Сбалансированное распределение капитала. "
-        elif btc_dom > 40:
-            pulse_text += f"при снижающейся доминации BTC ({btc_dom:.1f}%). "
-            pulse_text += "Деньги начинают перетекать в альткоины — подготовка к альтсезону."
-        else:
-            pulse_text += f"при низкой доминации BTC ({btc_dom:.1f}%). "
-            pulse_text += "Полноценный альтсезон! Деньги активно идут в альткоины."
+ТЕКУЩИЕ МЕТРИКИ:
+- Total Market Cap изменение за 24ч: {cap_change:+.2f}%
+- BTC Dominance: {btc_dom:.1f}%
+- Fear & Greed Index: {fear_value}/100 ({fng_data['classification']})
+- BTC Funding Rate: {btc_funding:+.4f}% {'(КРИТИЧЕСКИЙ ПЕРЕГРЕВ!)' if btc_funding and btc_funding >= 0.03 else '(негативный, риск Short Squeeze)' if btc_funding and btc_funding < 0.00 else '(нейтрально)'}
+- Altcoin Season Index: {alt_season}/100
 
-        # Предупреждение на основе экстремального фандинга (интегрировано в вердикт)
-        if btc_funding is not None:
-            if btc_funding >= 0.03:
-                pulse_text += f"\n\n⚠️ <b>Критический перегрев деривативами (Funding {btc_funding:+.4f}%).</b> Покупатели платят аномальную премию. Высокий риск ликвидационного сквиза вниз."
-            elif btc_funding < 0.00:
-                pulse_text += f"\n\n⚡️ <b>Доминируют маржинальные шорты (Funding {btc_funding:+.4f}%).</b> Рынок локально перепродан, высок потенциал импульсного Short Squeeze вверх."
+ПРАВИЛА:
+1. Вердикт: сначала факт (рост/падение + доминация BTC), потом интерпретация, потом предупреждение если есть перегрев/парадокс
+2. План действий: конкретные шаги (не общие фразы). Если Funding Rate критический (≥0.03% или <0.00%) - это ПРИОРИТЕТ над остальным
+3. НЕ используй HTML теги <br>, <p>. Используй только <b>, <i>, <a href="">
+4. Пиши строго по делу, без воды
 
-        # Парадокс Fear & Greed
-        if (fear_value > 60 and cap_change < -3) or (fear_value < 40 and cap_change > 3):
-            pulse_text += "\n\n⚠️ <b>Парадокс:</b> "
-            if fear_value > 60 and cap_change < -3:
-                pulse_text += f"Индекс показывает жадность ({fear_value}/100), но рынок падает. "
-                pulse_text += "Люди ещё не паникуют и держат позиции. Возможно дальнейшее падение."
+Формат ответа:
+[2-3 предложения с вердиктом]
+
+🎯 <b>План действий:</b>
+• [действие 1]
+• [действие 2]
+• [действие 3]"""
+
+            ai_verdict = openai_client.chat.completions.create(
+                model="deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": verdict_prompt}],
+                temperature=0.3,
+                max_tokens=500
+            )
+
+            verdict_text = ai_verdict.choices[0].message.content.strip()
+            # Очистка от запрещенных тегов
+            verdict_text = verdict_text.replace("<br>", "\n").replace("</br>", "").replace("<br/>", "\n")
+            verdict_text = verdict_text.replace("<p>", "").replace("</p>", "\n")
+
+            pulse_text += verdict_text
+
+        except Exception as e:
+            logger.error(f"Ошибка AI вердикта: {e}")
+            # Fallback на базовый анализ
+            pulse_text += f"Рынок: {cap_change:+.1f}% за 24ч, BTC dominance {btc_dom:.1f}%, Fear & Greed {fear_value}/100.\n\n"
+            pulse_text += "🎯 <b>План действий:</b>\n"
+
+            if btc_funding is not None and btc_funding >= 0.03:
+                pulse_text += "• 🛑 Подтянуть стопы, зафиксировать профит\n"
+                pulse_text += "• ❌ Запрет на новые лонги с плечом"
+            elif btc_funding is not None and btc_funding < 0.00:
+                pulse_text += "• 🟢 Искать точки входа в лонг\n"
+                pulse_text += "• ⚡️ Не шортить импульсивно"
+            elif cap_change < -3:
+                pulse_text += "• ⏸️ Воздержаться от лонгов по альтам\n"
+                pulse_text += "• 👀 Ждать разворота Total MCap"
             else:
-                pulse_text += f"Индекс показывает страх ({fear_value}/100), но рынок растёт! "
-                pulse_text += "Умные деньги входят, пока толпа боится."
-
-        # План действий (ПРИОРИТЕТ: Funding Rate > Total MCap)
-        pulse_text += "\n\n🎯 <b>План действий:</b>\n"
-
-        # Критический фандинг ПЕРЕЗАПИСЫВАЕТ стандартный план
-        if btc_funding is not None and btc_funding >= 0.03:
-            pulse_text += "• 🛑 Подтянуть стоп-лоссы в безубыток\n"
-            pulse_text += "• ❌ Запрет на открытие новых лонгов с плечом\n"
-            pulse_text += "• 💵 Частично зафиксировать спотовый профит"
-        elif btc_funding is not None and btc_funding < 0.00:
-            pulse_text += "• 🟢 Искать точки входа в лонг на отскок от поддержек\n"
-            pulse_text += "• ⚡️ Запрет на импульсивные шорты в пол\n"
-            pulse_text += "• 🎯 Расставить лимитные ордера в Alpha-Радаре"
-        else:
-            # Стандартный план на основе Total MCap (только если фандинг нейтральный)
-            if cap_change < -3:
-                pulse_text += "• ⏸️ Воздержаться от импульсивных лонгов по альтам\n"
-                pulse_text += "• 👀 Ждать разворота Total MCap (+1.5-2%) и падения доминации BTC &lt; 55%\n"
-                pulse_text += "• 📋 Подготовить пул сильных монет в Alpha-Радаре под отскок"
-            elif cap_change < 0:
-                pulse_text += "• ⏸️ Коррекция — можно переждать\n"
-                pulse_text += "• 👀 Следить за Total Market Cap: разворот на +2% = сигнал к входу\n"
-                pulse_text += "• 💰 Готовить список монет для покупки"
-            elif cap_change > 3 and btc_dom < 50:
-                pulse_text += "• 🚀 Сильный рост + низкая BTC доминация = альтсезон!\n"
-                pulse_text += "• ✅ Можно докупать качественные альты\n"
-                pulse_text += "• ⚠️ Следить за перегревом (Fear &amp; Greed &gt; 80)"
-            else:
-                pulse_text += "• 📊 Рынок в нормальном состоянии\n"
-                pulse_text += "• ✅ Можно входить в позиции постепенно\n"
-                pulse_text += "• 📈 Проверяй /pulse 2-3 раза в день"
+                pulse_text += "• 📊 Рынок в норме\n"
+                pulse_text += "• ✅ Можно входить постепенно"
 
     return pulse_text
 

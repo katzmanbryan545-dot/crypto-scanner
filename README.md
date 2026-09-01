@@ -4,7 +4,7 @@ emoji: 🚀
 colorFrom: blue
 colorTo: indigo
 sdk: gradio
-sdk_version: "4.44.0"
+sdk_version: "5.9.1"
 app_file: app.py
 pinned: false
 ---
@@ -47,4 +47,4 @@ Set these environment variables in Space Settings → Repository secrets:
 - **Search**: Tavily API
 - **Data**: Google Sheets, CoinGecko API
 - **Scheduler**: APScheduler
-- **Interface**: Gradio 4.44.0
+- **Interface**: Gradio 5.x
